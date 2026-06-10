@@ -1,0 +1,284 @@
+---
+title: "Gymnasium Environments for Rover Navigation"
+sidebarTitle: "Environments"
+description: "RoboTerrain provides three Gymnasium environments for rover navigation: RoverEnv (LIDAR+pose), RoverEnvFused (vision-fused), and a discrete-action variant for off-road RL research."
+---
+
+RoboTerrain ships three Gymnasium-compatible environments that share a common ROS 2 / Gazebo Fortress backbone but differ in observation modality and action structure. **`RoverEnv`** is the baseline: it feeds LIDAR, pose, IMU, target, and velocity data to a continuous-action SAC agent and is the fastest to train. **`RoverEnvFused`** replaces raw sensor arrays with a 3-channel fused image (grayscale + monocular depth + spatiotemporal attention heatmap) produced by the Active Vision pipeline, making it the right choice when pedestrian-aware perception matters. **`RoverEnvFused` (Discrete)** keeps the fused image observation but collapses the action space to a small discrete set, which suits algorithms like DQN or the DreamerV3 gaze-control head. Choose `RoverEnv` for rapid prototyping and LIDAR-first navigation; choose the fused variants when integrating camera-based social awareness.
+
+---
+
+## RoverEnv
+
+`RoverEnv` is defined in `ros2_ws/src/sb3/environments/rover_env.py`. It subscribes to LIDAR, IMU, wheel odometry, and a pose-array topic, and publishes `Twist` commands at each step.
+
+### Constructor Signature
+
+```python
+RoverEnv(
+    size=(64, 64),
+    length=2000,
+    scan_topic='/scan',
+    imu_topic='/imu/data',
+    cmd_vel_topic='/cmd_vel',
+    world_n='inspect',
+    lidar_points=32,
+    max_lidar_range=12.0,
+)
+```
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `size` | `tuple` | `(64, 64)` | Reserved image buffer size (unused in base env) |
+| `length` | `int` | `2000` | Maximum steps per episode |
+| `scan_topic` | `str` | `'/scan'` | ROS 2 LIDAR topic |
+| `imu_topic` | `str` | `'/imu/data'` | ROS 2 IMU topic |
+| `cmd_vel_topic` | `str` | `'/cmd_vel'` | Velocity command topic |
+| `world_n` | `str` | `'inspect'` | Active Gazebo world — `'inspect'`, `'moon'` (island), or `'maze'` |
+| `lidar_points` | `int` | `32` | Number of downsampled LIDAR points |
+| `max_lidar_range` | `float` | `12.0` | Maximum LIDAR range in metres |
+
+### Observation Space
+
+The observation is a `gymnasium.spaces.Dict` with five keys:
+
+```python
+observation_space = spaces.Dict({
+    'lidar': spaces.Box(
+        low=0,
+        high=12.0,           # max_lidar_range
+        shape=(32,),         # lidar_points
+        dtype=np.float32
+    ),
+    'pose': spaces.Box(
+        low=np.array([-30.0, -30.0, -10.0]),
+        high=np.array([ 30.0,  30.0,  10.0]),
+        dtype=np.float32     # shape (3,): x, y, z
+    ),
+    'imu': spaces.Box(
+        low=np.array([-np.pi, -np.pi, -np.pi]),
+        high=np.array([ np.pi,  np.pi,  np.pi]),
+        dtype=np.float32     # shape (3,): pitch, roll, yaw
+    ),
+    'target': spaces.Box(
+        low=np.array([0,      -np.pi]),
+        high=np.array([100,    np.pi]),
+        shape=(2,),
+        dtype=np.float32     # [distance_m, relative_angle_rad]
+    ),
+    'velocities': spaces.Box(
+        low=np.array([-10.0, -10.0]),
+        high=np.array([ 10.0,  10.0]),
+        shape=(2,),
+        dtype=np.float32     # [linear_vel, angular_vel]
+    ),
+})
+```
+
+| Key | Shape | Range | Description |
+|---|---|---|---|
+| `lidar` | `(32,)` | `[0, 12.0]` | Downsampled min-segment LIDAR ranges (m) |
+| `pose` | `(3,)` | `[-30, 30]` x/y, `[-10, 10]` z | Ground-truth position from pose-array bridge |
+| `imu` | `(3,)` | `[-π, π]` | Pitch, roll, yaw from IMU quaternion |
+| `target` | `(2,)` | distance `[0, 100]`, angle `[-π, π]` | Distance (m) and relative bearing to goal |
+| `velocities` | `(2,)` | `[-10, 10]` | Wheel-odometry linear and angular velocities |
+
+### Action Space
+
+```python
+action_space = spaces.Box(
+    low=np.array([-1.0, -np.pi]),
+    high=np.array([ 1.0,  np.pi]),
+    dtype=np.float32
+)
+# action[0] = speed        (-1.0 to 1.0)
+# action[1] = desired_heading (-π to π, relative to current yaw)
+```
+
+The heading action is a **relative offset** added to the current yaw. A PID heading controller converts the resulting absolute desired heading into an angular velocity command (see [PID Heading Controller](#pid-heading-controller) below).
+
+### Supported Worlds
+
+| World | Alias | Description |
+|---|---|---|
+| `'inspect'` | — | Industrial inspection zone with solar panels and structures |
+| `'moon'` | `'island'` | Island/lunar terrain with open rocky ground |
+| `'maze'` | — | Walled maze for structured navigation |
+
+### Safety Mechanisms
+
+The environment enforces four termination conditions that end the episode early:
+
+- **Flip detection** — episode ends immediately if `|roll|` or `|pitch|` exceeds **1.48 rad (≈ 85°)**.
+- **Stuck detection** — episode ends if the total Euclidean displacement over the last 600 steps is less than **0.001 m**.
+- **Out-of-bounds detection** — episode ends if the rover's x or y position exits the world-specific boundary rectangle.
+- **Collision monitoring** — persistent proximity under 0.3 m for more than 15 consecutive steps triggers an episode reset.
+
+### Reward and Penalties
+
+| Event | Value | Notes |
+|---|---|---|
+| Goal reached (distance < 0.5 m) | `+100` | New goal randomised; episode continues |
+| Collision (LIDAR min < 0.3 m) | `-0.5` | Per-step penalty |
+| Stuck (< 0.001 m in 600 steps) | `-25.0` | `stuck_penalty` |
+| Flip / persistent collision | `-20` | `general_penalty` |
+| Out-of-bounds | `-10` | `too_far_away_penalty` |
+| Distance progress reward | `distance_delta × 0.3 × 1.5` | Positive when moving toward goal |
+| Linear velocity bonus | `linear_vel × 0.0025` | Encourages forward motion |
+| Turn penalty | `-0.0015 × |angular_vel|` | Discourages spinning in place |
+
+---
+
+## RoverEnvFused
+
+`RoverEnvFused` is defined in `ros2_ws/src/sb3/environments/leo_rover_env_fused.py`. It extends the base environment's navigation logic with a **shared-memory fused image observation** produced by the Active Vision pipeline, replacing raw sensor arrays with a compact 3-channel representation.
+
+### Constructor Signature
+
+```python
+RoverEnvFused(
+    size=(96, 96),
+    length=6000,
+    scan_topic='/scan',
+    imu_topic='/imu/data',
+    cmd_vel_topic='/cmd_vel',
+    world_n='inspect',
+    lidar_points=32,
+    max_lidar_range=12.0,
+    rl_obs_name='rl_observation',
+)
+```
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `size` | `tuple` | `(96, 96)` | Height × width of the fused observation image |
+| `length` | `int` | `6000` | Maximum steps per episode (3× longer than base) |
+| `world_n` | `str` | `'inspect'` | Gazebo world; `'island'` is silently remapped to `'moon'` |
+| `rl_obs_name` | `str` | `'rl_observation'` | Shared-memory block name written by `inference.py` |
+
+### Fused Observation Channels
+
+The observation is a `(96, 96, 3)` float32 array in `[0, 1]` read from shared memory. Each channel carries distinct semantic content:
+
+| Channel | Content | Source |
+|---|---|---|
+| 0 — Grayscale | Rectified fisheye view of the forward scene | `fisheye_ros2_mem_share.py` |
+| 1 — Depth | Monocular depth estimate (normalized) | `inference.py` depth head |
+| 2 — Attention | Spatiotemporal pedestrian occupancy heatmap | Attention model checkpoint |
+
+<Note>
+`RoverEnvFused` is designed exclusively for the Active Vision / DreamerV3 pipeline. `inference.py` must be running and writing to shared memory before the environment's `reset()` is called.
+</Note>
+
+The fused environment preserves the same PID heading controller, safety mechanisms, and reward function as `RoverEnv`. Episode length is set to 6000 steps to accommodate the slower perception stack.
+
+---
+
+## RoverEnvFused (Discrete)
+
+The discrete variant is defined in `ros2_ws/src/sb3/environments/discrete_rover_env_fused.py`. It inherits the `RoverEnvFused` class name and fused 3-channel observation but replaces the continuous `Box` action space with a `Discrete` action space.
+
+This variant is used as the **gaze-control head** in the DreamerV3 joint policy: the RL agent selects one of a small set of camera pan angles (−60°, −30°, 0°, +30°, +60°) simultaneously with its locomotion commands.
+
+```python
+# Discrete action → pan angle mapping
+pan_offsets = [-60, -30, 0, +30, +60]  # degrees
+```
+
+The discrete environment is imported by `sb3_SAC.py` at runtime when `--vision True` is passed, overriding the continuous fused environment.
+
+---
+
+## World-Specific Configuration
+
+Each world uses different spawn and boundary rectangles. These are set automatically from the `world_n` constructor argument.
+
+### inspect (Industrial Inspection Zone)
+
+```python
+rand_x_range      = (-27, -19)   # rover spawn x (m)
+rand_y_range      = (-27, -19)   # rover spawn y (m)
+rand_goal_x_range = (-27, -19)   # goal x (m)
+rand_goal_y_range = (-27, -19)   # goal y (m)
+
+too_far_away_low_x  = -29
+too_far_away_high_x = -13
+too_far_away_low_y  = -29
+too_far_away_high_y = -17
+```
+
+### moon / island (Lunar Island Terrain)
+
+```python
+rand_x_range      = (-4, 4)
+rand_y_range      = (-4, 4)
+rand_goal_x_range = (-4, 4)
+rand_goal_y_range = (-4, 4)
+
+too_far_away_low_x  = -20
+too_far_away_high_x =  10
+too_far_away_low_y  = -20
+too_far_away_high_y =  20
+```
+
+### maze (default)
+
+```python
+rand_x_range      = (-4, 4)
+rand_y_range      = (-4, 4)
+rand_goal_x_range = (-4, 4)
+rand_goal_y_range = (-4, 4)
+
+too_far_away_low_x  = -30
+too_far_away_high_x =  30
+too_far_away_low_y  = -30
+too_far_away_high_y =  30
+```
+
+On each `reset()`, both the rover spawn position and the goal position are independently sampled uniformly from the ranges above.
+
+---
+
+## PID Heading Controller
+
+Rather than sending angular velocity directly to the robot, the environment uses a **PID controller** to track the desired absolute heading computed from the policy's relative heading action.
+
+```python
+# Parameters (set in __init__)
+Kp = 2.0   # Proportional gain
+Ki = 0.0   # Integral gain
+Kd = 0.1   # Derivative gain
+max_angular_velocity = 7.0  # rad/s clamp
+```
+
+At each step the controller:
+
+1. Computes `desired_heading = current_yaw + action[1]`
+2. Calculates the wrapped heading error: `error = atan2(sin(desired - current), cos(desired - current))`
+3. Runs a PID update with elapsed wall-clock `dt`
+4. Clips the output to `[-7.0, 7.0]` rad/s before publishing to `/cmd_vel`
+
+```python
+def heading_controller(self, desired_heading, current_heading):
+    dt = time.time() - self.last_time
+    self.last_time = time.time()
+
+    error = math.atan2(
+        math.sin(desired_heading - current_heading),
+        math.cos(desired_heading - current_heading)
+    )
+    self.integral_error += error * dt
+    derivative_error = (error - self.last_error) / dt
+    self.last_error = error
+
+    control = (
+        self.Kp * error
+        + self.Ki * self.integral_error
+        + self.Kd * derivative_error
+    )
+    return np.clip(control, -self.max_angular_velocity, self.max_angular_velocity)
+```
+
+<Tip>
+The derivative term (`Kd=0.1`) damps oscillation when the rover overshoots a sharp heading change. If you observe excessive hunting behaviour in a new world, lower `Kd` or reduce `max_angular_velocity`.
+</Tip>

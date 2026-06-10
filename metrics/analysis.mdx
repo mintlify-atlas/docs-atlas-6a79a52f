@@ -1,0 +1,176 @@
+---
+title: "Analyze and Visualize Navigation Metrics with CLI"
+sidebarTitle: "Analysis"
+description: "Use cli_main.py to compare multi-trial navigation metrics, generate time-series plots, and produce publication-ready visualizations from RoboTerrain CSV log files."
+---
+
+`cli_main.py` provides the `MetricsAnalyzerCLI` class, a unified command-line tool that wraps three backend components — `MetricsDataLoader`, `MetricsStatistics`, and `TimeSeriesVisualizer` — into a single workflow for offline analysis of RoboTerrain session logs. You point it at one or more CSV files produced by `MetricsNode`, specify which metrics and plot types you want, and the tool handles outlier removal, optional time normalization, statistical computation, and figure generation automatically. Output is saved as both PDF and PNG files under a structured output directory, making results easy to share or include in research papers.
+
+## Basic Usage
+
+```bash
+cd metrics_analyzer
+
+# Plot all metrics from a single trial (default: time_series, all metrics)
+python cli_main.py data/metric_logs/metrics_log_20250116_120457.csv
+
+# Compare velocity and IMU acceleration across two trials
+python cli_main.py trial1.csv trial2.csv -m CV IM -p time_series
+
+# Full multi-trial comparison with custom output directory
+python cli_main.py trial1.csv trial2.csv trial3.csv \
+    -m TC OC CV IM \
+    -p time_series \
+    -o ./results
+```
+
+When you pass multiple CSV files, the tool overlays all trials on the same axes so differences in trajectory, collision rate, and terrain response are immediately visible.
+
+---
+
+## Metric Flags
+
+The following flags are accepted by the `-m`/`--metrics` argument. They map to the column names written by `MetricsNode` in the session CSV files.
+
+| Flag | Full Name | Description |
+|---|---|---|
+| `TC` | Total Collisions | Cumulative collision count for the session |
+| `CS` | Current Collision Status | Binary collision flag (`0` or `1`) per logging cycle |
+| `SM` | Smoothness Metric | Cumulative sum of IMU acceleration + angular velocity magnitudes |
+| `OC` | Obstacle Clearance | Rolling average of minimum LIDAR range (meters) |
+| `DT` | Distance Traveled | Cumulative Euclidean distance from pose data (meters) |
+| `CV` | Velocity Over Rough Terrain (VORT) | Mean wheel odometry speed; recorded as VORT when rough terrain is active |
+| `IM` | IMU Acceleration Magnitude | 3-axis linear acceleration magnitude from the latest IMU sample (m/s²) |
+| `RT` | Is Rough Terrain | Binary flag — `1` when IMU acceleration exceeds 15.0 m/s² |
+| `VR` | Vertical Roughness | Absolute Z-axis IMU acceleration — continuous terrain roughness signal |
+
+---
+
+## CLI Arguments
+
+All arguments are defined in `_setup_arguments()` inside `MetricsAnalyzerCLI`.
+
+### Positional
+
+| Argument | Type | Description |
+|---|---|---|
+| `csv_files` | `Path` (one or more) | Input CSV files to process. Pass multiple paths separated by spaces to enable multi-trial comparison. |
+
+### Optional
+
+| Argument | Short | Choices / Type | Default | Description |
+|---|---|---|---|---|
+| `--metrics` | `-m` | Any combination of `TC CS SM OC DT CV IM RT VR` | All metrics | Restrict analysis and plotting to the specified metric flags. |
+| `--plot-types` | `-p` | `time_series` `correlation` `aggregate` `comparison` | `time_series` | One or more plot types to generate. Multiple values are space-separated. |
+| `--output-dir` | `-o` | `Path` | `./output` | Root directory for all generated figures and CSV exports. Created automatically if it does not exist. |
+| `--normalize` | `-n` | `percentage` `fixed_interval` `none` | `percentage` | Time normalization method applied before plotting. `percentage` maps the session to 0–100%; `fixed_interval` resamples to a regular grid; `none` keeps raw ROS timestamps. |
+| `--iqr-multiplier` | — | `float` | `1.5` | Multiplier applied to the interquartile range when identifying outliers. Higher values make outlier removal less aggressive. |
+| `--save-outliers` | — | flag | `False` | When set, rows identified as outliers are written to `outliers.csv` in the output directory instead of being silently discarded. |
+| `--confidence-level` | — | `float` (0–1) | `0.95` | Confidence level used by `MetricsStatistics` when computing confidence intervals for rolling statistics. |
+| `--fixed-interval` | — | `float` | `1.0` | Resampling interval in seconds, used only when `--normalize fixed_interval` is active. |
+
+**Validation rules enforced at startup:**
+
+- All `csv_files` must exist and have a `.csv` extension.
+- `--confidence-level` must be strictly between 0 and 1.
+- `--iqr-multiplier` must be positive.
+- `--fixed-interval` must be positive.
+
+---
+
+## Output Files
+
+All figures are written inside the `combined_metrics/` subdirectory of your chosen output path. The tool saves each figure in both PDF and PNG formats.
+
+```
+<output-dir>/
+└── combined_metrics/
+    ├── TC_comparison.pdf
+    ├── TC_comparison.png
+    ├── OC_comparison.pdf
+    ├── OC_comparison.png
+    ├── CV_comparison.pdf
+    ├── CV_comparison.png
+    ├── IM_comparison.pdf
+    ├── IM_comparison.png
+    ├── velocity_roughness_comparison.pdf   # only when both CV and VR are selected
+    └── velocity_roughness_comparison.png
+```
+
+Each `<FLAG>_comparison` figure is a multi-trial overlay produced by `TimeSeriesVisualizer.plot_multi_trial_comparison()`. Trial labels are derived from the CSV filenames (stem only, without the `.csv` extension) so plots are self-annotating.
+
+The tool also prints the mean value of each metric per trial to stdout during processing:
+
+```
+Mean Velocity Over Rough Terrain (VORT) for metrics_log_20250116_120457: 0.312
+Mean Total Smoothness of Route (TSR) for metrics_log_20250116_120457: 4.871
+--------------------------------------------------
+```
+
+<Note>
+  The output directory (and the `combined_metrics/` subdirectory within it) are created automatically by `validate_output_dir()` before any processing begins. You do not need to create them manually.
+</Note>
+
+---
+
+## Velocity vs. Roughness Comparison
+
+When both `CV` and `VR` are included in the selected metrics, the tool generates an additional special figure: `velocity_roughness_comparison`. This plot is produced by `TimeSeriesVisualizer.plot_velocity_roughness_comparison()` and overlays Current Velocity (VORT) and Vertical Roughness on dual Y-axes across all trials, making it easy to see whether the rover decelerates in response to terrain roughness events.
+
+```bash
+# Trigger the combined velocity-roughness plot explicitly
+python cli_main.py trial1.csv trial2.csv -m CV VR -p time_series
+```
+
+The combined figure is saved alongside the per-metric figures in `combined_metrics/`:
+
+```
+combined_metrics/
+├── CV_comparison.png
+├── VR_comparison.png
+└── velocity_roughness_comparison.png   ← generated automatically
+```
+
+---
+
+## Multi-Trial Comparison Example
+
+The following example compares three separate session logs across four metrics and writes results to a custom directory:
+
+```bash
+python cli_main.py \
+    metrics_log_20250116_120457.csv \
+    metrics_log_20250116_125842.csv \
+    metrics_log_20250116_162302.csv \
+    -m TC OC CV IM -p time_series \
+    -o ./results
+```
+
+<CardGroup cols={2}>
+  <Card title="What this command does" icon="chart-line">
+    Loads all three trial CSV files, removes outliers with the default IQR multiplier of 1.5, normalizes time as a percentage of total session length, then overlays all three trials in a single time-series figure for each of the four selected metrics.
+  </Card>
+  <Card title="Output produced" icon="folder-open">
+    Saves `TC_comparison`, `OC_comparison`, `CV_comparison`, and `IM_comparison` figures (PDF + PNG) to `./results/combined_metrics/`. Trial names are automatically derived from the CSV filenames.
+  </Card>
+</CardGroup>
+
+**Extended example — roughness analysis with outlier inspection:**
+
+```bash
+python cli_main.py \
+    metrics_log_20250116_120457.csv \
+    metrics_log_20250116_125842.csv \
+    metrics_log_20250116_162302.csv \
+    -m TC OC CV VR IM RT \
+    -p time_series \
+    -o ./results \
+    --normalize percentage \
+    --iqr-multiplier 2.0 \
+    --save-outliers \
+    --confidence-level 0.95
+```
+
+<Tip>
+  Pass `--save-outliers` when you suspect sensor noise or simulation artifacts are skewing your plots. The removed data points are written to `<output-dir>/outliers.csv` with the affected column name and whether each point was below the lower bound or above the upper bound of the IQR filter. Reviewing this file helps you decide whether to tighten or loosen `--iqr-multiplier` for your specific terrain scenario.
+</Tip>

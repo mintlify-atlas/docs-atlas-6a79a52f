@@ -1,72 +1,95 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mintlify Starter Kit",
+  "name": "RoboTerrain",
+  "theme": "aspen",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#24344c",
+    "light": "#8c94a4",
+    "dark": "#cfd3d9"
   },
-  "favicon": "/favicon.svg",
-  "navigation": {
-    "pages": [
-      {
-        "group": "Getting Started",
-        "pages": [
-          "index",
-          "quickstart"
-        ]
-      }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
+  "favicon": "https://media.brand.dev/6256f58e-ae5e-40f5-a8c4-c9d50cb34481.svg",
   "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
+    "light": "https://media.brand.dev/c7c85db8-85e7-4469-af65-68b9ea32a87e.svg",
+    "dark": "https://media.brand.dev/c7c85db8-85e7-4469-af65-68b9ea32a87e.svg"
   },
   "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
     "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://app.mintlify.com"
+      "type": "github",
+      "href": "https://github.com/jackvice/RoboTerrain"
     }
-  },
-  "contextual": {
-    "options": [
-      "copy",
-      "view",
-      "chatgpt",
-      "claude",
-      "perplexity",
-      "mcp",
-      "cursor",
-      "vscode"
-    ]
   },
   "footer": {
     "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
+      "github": "https://github.com/jackvice/RoboTerrain"
     }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Guide",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "docker-setup"
+            ]
+          },
+          {
+            "group": "Simulation",
+            "pages": [
+              "simulation/worlds",
+              "simulation/robots",
+              "simulation/dynamic-obstacles"
+            ]
+          },
+          {
+            "group": "Reinforcement Learning",
+            "pages": [
+              "rl/environments",
+              "rl/training",
+              "rl/inference",
+              "rl/active-vision"
+            ]
+          },
+          {
+            "group": "Metrics",
+            "pages": [
+              "metrics/logging",
+              "metrics/analysis"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "Environment API",
+            "pages": [
+              "reference/rover-env",
+              "reference/rover-env-fused",
+              "reference/discrete-env"
+            ]
+          },
+          {
+            "group": "ROS 2 Nodes & Topics",
+            "pages": [
+              "reference/ros-topics",
+              "reference/metrics-node",
+              "reference/launch-files"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "reference/nav2-params",
+              "reference/reward-function"
+            ]
+          }
+        ]
+      }
+    ]
   }
 }

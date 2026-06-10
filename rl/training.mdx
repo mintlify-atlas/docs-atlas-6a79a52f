@@ -1,0 +1,202 @@
+---
+title: "Training SAC Navigation Agents with Stable Baselines3"
+sidebarTitle: "Training"
+description: "Train Soft Actor-Critic agents for off-road rover navigation using sb3_SAC.py with configurable worlds, checkpointing, and VecNormalize observation normalization."
+---
+
+`sb3_SAC.py` is the single entry point for both training and inference of rover navigation agents. In training mode it creates a **Soft Actor-Critic (SAC)** model with automatic entropy tuning, wraps the Gymnasium environment in a `VecNormalize` normalizer for stable learning, and saves periodic checkpoints alongside their matching normalization statistics. In predict mode the same script loads a saved checkpoint and normalization file, disables further updates, and runs the policy deterministically. All major options are controlled through CLI arguments described below.
+
+<Warning>
+Training mode requires an **NVIDIA CUDA GPU**. The model is created with `device="cuda"`. CPU-only machines can run inference (`--mode predict`) but training will fail or be impractically slow.
+</Warning>
+
+<Note>
+Before launching `sb3_SAC.py`, the **position bridge node** (`ign_ros2_pose_topic.py`) must already be running so that the `/rover/pose_array` topic is available. See [Inference → Running the Position Bridge](/rl/inference#running-the-position-bridge) for the exact command.
+</Note>
+
+---
+
+## CLI Arguments
+
+All arguments are parsed by `argparse` in `parse_args()`.
+
+| Argument | Choices / Type | Default | Required | Description |
+|---|---|---|---|---|
+| `--mode` | `train` \| `predict` | `train` | Yes | Operating mode |
+| `--load` | `True` \| `False` | — | Yes | Whether to load an existing checkpoint |
+| `--world` | `inspect` \| `maze` \| `island` \| `rubicon` | `inspect` | No | Which Gazebo world to use |
+| `--vision` | `True` \| `False` | `False` | No | Use fused camera observation instead of LIDAR |
+| `--checkpoint_name` | `str` (file path) | — | When `--load True` | Path to the `.zip` checkpoint file |
+| `--normalize_stats` | `str` (file path) | — | When `--load True` | Path to the matching `_normalize.pkl` file |
+
+<Note>
+`--checkpoint_name` and `--normalize_stats` are validated at runtime: if `--load True` is set and either path is missing the script raises a `ValueError` before creating any ROS nodes.
+</Note>
+
+---
+
+## Training from Scratch
+
+The minimal command to start a fresh training run in the inspection world:
+
+```bash
+cd ros2_ws/src/sb3/
+python sb3_SAC.py --mode train --load False --world inspect
+```
+
+To train in the maze world with fused camera observations:
+
+```bash
+python sb3_SAC.py --mode train --load False --world maze --vision True
+```
+
+The script will:
+1. Create a timestamped `DummyVecEnv` wrapping a `Monitor`-wrapped environment
+2. Initialise a fresh `VecNormalize` wrapper
+3. Build the SAC model with the hyperparameters below
+4. Call `model.learn(total_timesteps=8_000_000, ...)`
+
+---
+
+## SAC Hyperparameters
+
+These values are hard-coded in `sb3_SAC.py` when creating a new model (`--load False`):
+
+```python
+model = SAC(
+    "MultiInputPolicy",
+    env,
+    device="cuda",
+    learning_rate=3e-4,
+    buffer_size=300_000,
+    learning_starts=50_000,
+    batch_size=512,
+    train_freq=512,       # collect 512 new transitions before each update
+    gradient_steps=6,     # gradient updates per training call
+    ent_coef="auto_0.5",  # automatic entropy tuning, initial α = 0.5
+    verbose=1,
+    tensorboard_log=tensorboard_dir,
+)
+```
+
+| Hyperparameter | Value | Notes |
+|---|---|---|
+| `learning_rate` | `3e-4` | Adam optimizer LR for actor, critic, and entropy |
+| `buffer_size` | `300,000` | Experience replay buffer capacity |
+| `learning_starts` | `50,000` | Steps of random exploration before gradient updates begin |
+| `batch_size` | `512` | Mini-batch size for each gradient step |
+| `train_freq` | `512` | Collect this many new steps before triggering an update |
+| `gradient_steps` | `6` | Number of gradient updates per `train_freq` cycle |
+| `ent_coef` | `"auto_0.5"` | SAC entropy coefficient; auto-tuned starting from α = 0.5 |
+| `total_timesteps` | `8,000,000` | Total environment steps for a full training run |
+| `device` | `"cuda"` | PyTorch device |
+
+<Tip>
+When resuming from a checkpoint, `sb3_SAC.py` resets the entropy coefficient to `0.05` and sets `target_entropy = -1.0` to fine-tune a previously trained agent with lower exploration noise.
+</Tip>
+
+---
+
+## Checkpointing
+
+Checkpoints are saved by the custom `SaveVecNormalizeCallback`, which extends SB3's `CheckpointCallback`:
+
+```python
+class SaveVecNormalizeCallback(CheckpointCallback):
+    def __init__(self, save_freq, save_path, name_prefix, env):
+        super().__init__(save_freq=save_freq, save_path=save_path,
+                         name_prefix=name_prefix, save_replay_buffer=False)
+        self.env = env   # VecNormalize reference
+
+    def _on_step(self) -> bool:
+        if self.n_calls % self.save_freq == 0:
+            stats_path = os.path.join(
+                self.save_path,
+                f"{self.name_prefix}_{self.num_timesteps}_steps_normalize.pkl"
+            )
+            self.env.save(stats_path)
+        return super()._on_step()
+```
+
+**Checkpoint cadence:** every **100,000 environment steps**.
+
+**Directory:** `./checkpoints/` (created automatically).
+
+**File naming convention:**
+
+```
+checkpoints/
+├── sac_inspect_20250126_1430_100000_steps.zip          # model weights
+├── sac_inspect_20250126_1430_100000_steps_normalize.pkl  # VecNormalize stats
+├── sac_inspect_20250126_1430_200000_steps.zip
+├── sac_inspect_20250126_1430_200000_steps_normalize.pkl
+└── vec_normalize_20250126_1430_initial.pkl             # stats at step 0
+```
+
+The timestamp (`YYYYMMDD_HHMM`) embedded in the prefix allows multiple training runs in the same directory without collision.
+
+---
+
+## Observation Normalization
+
+The environment is wrapped in `VecNormalize` for online normalisation of observations and rewards:
+
+```python
+env = VecNormalize(
+    env,
+    norm_obs=True,
+    norm_reward=True,
+    clip_obs=20.,      # clip normalised obs to ±20 σ
+    clip_reward=100.,  # clip normalised rewards to ±100 σ
+    gamma=0.99,
+    epsilon=1e-8,
+)
+```
+
+| Parameter | Value | Purpose |
+|---|---|---|
+| `clip_obs` | `20.0` | Prevents LIDAR or pose outliers from dominating gradients |
+| `clip_reward` | `100.0` | Aligns with the `goal_reward = 100` scale |
+| `gamma` | `0.99` | Discount factor used for reward normalisation |
+
+The running mean and variance are updated online during training. During inference, updates are disabled by setting `env.training = False` and `env.norm_reward = False`.
+
+---
+
+## TensorBoard Monitoring
+
+Training metrics are logged to a timestamped subdirectory under `tboard_logs/`:
+
+```bash
+tensorboard --logdir tboard_logs/
+```
+
+The log directory path follows the pattern `./tboard_logs/SAC_{world}_{timestamp}/`. Key scalars include:
+- `train/actor_loss`, `train/critic_loss`, `train/ent_coef`
+- `rollout/ep_rew_mean`, `rollout/ep_len_mean`
+- `time/total_timesteps`, `time/fps`
+
+---
+
+## Resuming Training
+
+To continue training from a saved checkpoint:
+
+```bash
+python sb3_SAC.py \
+  --mode train \
+  --load True \
+  --world inspect \
+  --checkpoint_name checkpoints/sac_inspect_20250126_1430_500000_steps.zip \
+  --normalize_stats checkpoints/sac_inspect_20250126_1430_500000_steps_normalize.pkl
+```
+
+When `--load True` the script:
+1. Loads the `VecNormalize` statistics from `--normalize_stats` (preserving the running mean/variance)
+2. Loads the SAC model weights and replay buffer reference from `--checkpoint_name`
+3. Resets the entropy coefficient to `0.05` for fine-tuning
+4. Calls `model.learn(..., reset_num_timesteps=False)` so step counts continue from the checkpoint
+
+<Note>
+Always pair a `.zip` model checkpoint with its matching `_normalize.pkl` file. Loading mismatched normalization statistics will cause the observation distribution seen by the policy to differ from what it was trained on, leading to degraded performance.
+</Note>

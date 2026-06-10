@@ -1,0 +1,133 @@
+---
+title: "Run RoboTerrain in Docker with ROS 2 and CUDA"
+sidebarTitle: "Docker Setup"
+description: "Build and run the RoboTerrain Docker container based on osrf/ros:humble-desktop with Gazebo Fortress, PyTorch CUDA, and Stable Baselines3 pre-installed."
+---
+
+The RoboTerrain Dockerfile provides a fully self-contained, reproducible environment built on top of `osrf/ros:humble-desktop` (Ubuntu 22.04). Inside the image you get ROS 2 Humble full desktop, Nav2, Gazebo Fortress via the `ros-humble-ros-gz` meta-package, PyTorch with CUDA 11.8 support, Stable Baselines3 with extras, and the entire `ros2_ws` workspace pre-built — so you can jump straight to running experiments without managing system dependencies on your host machine.
+
+## Prerequisites
+
+Before building or running the container, ensure the following are installed and configured on your host:
+
+- **Docker Engine** — version 20.10 or later. Install via the [official Docker documentation](https://docs.docker.com/engine/install/ubuntu/).
+- **NVIDIA Container Toolkit** (`nvidia-container-toolkit`) — required to expose your GPU inside the container. Follow the [NVIDIA installation guide](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) and verify with:
+
+  ```bash
+  docker run --rm --gpus all nvidia/cuda:11.8.0-base-ubuntu22.04 nvidia-smi
+  ```
+
+- **NVIDIA drivers** — CUDA 11.8 inside the container requires host driver version **≥ 520** on the host machine.
+
+## Build the Image
+
+From the root of the cloned repository (where the `Dockerfile` lives), build the image and tag it as `roboterrain`:
+
+```bash
+docker build -t roboterrain .
+```
+
+The build process will:
+1. Pull `osrf/ros:humble-desktop` as the base layer
+2. Install OpenGL libraries needed for Gazebo rendering
+3. Install ROS 2 Humble full desktop, Nav2, and all control packages via `apt`
+4. Install Gazebo Fortress and the ROS ↔ Gazebo bridge
+5. Install PyTorch (CUDA 11.8) and Stable Baselines3 via `pip3`
+6. Copy the `ros2_ws/src/` directory into the image and run `colcon build`
+
+Expect the initial build to take **10–20 minutes** depending on your network speed and CPU. Subsequent rebuilds use the Docker layer cache and are significantly faster unless the `apt` or `pip` steps change.
+
+## Run the Container
+
+### Headless GPU Training (Recommended)
+
+For running RL training jobs without a display, no X11 setup is required:
+
+```bash
+docker run --gpus all --rm -it roboterrain
+```
+
+<Tip>
+  Headless training is the most reliable mode for long-running experiments. Without a display server, Gazebo Fortress can be launched in headless mode using the `-s` (server-only) flag: `ign gazebo -s world.sdf`. This eliminates GPU memory contention between rendering and CUDA inference, and allows training on remote cloud instances or HPC clusters without a virtual framebuffer.
+</Tip>
+
+### With Gazebo GUI (X11 Forwarding)
+
+To view the Gazebo Fortress viewport from inside the container, pass your host X11 socket into the container:
+
+```bash
+# Allow the container to connect to the host X server
+xhost +local:docker
+
+docker run --gpus all --rm -it \
+  --env DISPLAY=$DISPLAY \
+  --volume /tmp/.X11-unix:/tmp/.X11-unix \
+  roboterrain
+```
+
+Once inside the container, the ROS 2 environment and workspace are already sourced (via `.bashrc`), so you can immediately run:
+
+```bash
+ros2 launch roverrobotics_gazebo 4wd_rover_gazebo.launch.py
+```
+
+## What's Included
+
+The following packages and libraries are installed inside the image:
+
+**ROS 2 Humble packages (via `apt`)**
+- `ros-humble-desktop-full` — Full ROS 2 desktop with RViz, rqt, and all standard middleware
+- `ros-humble-navigation2` — Nav2 navigation stack
+- `ros-humble-nav2-bringup` — Nav2 launch and configuration files
+- `ros-humble-ros2-control` — ROS 2 control framework
+- `ros-humble-ros2-controllers` — Standard controller implementations (diff-drive, joint-state broadcaster, etc.)
+- `ros-humble-diff-drive-controller` — Differential drive controller plugin
+- `ros-humble-joint-state-broadcaster` — Joint state publisher for Gazebo integration
+- `ros-humble-xacro` — Macro language for URDF/SDF robot descriptions
+- `ros-humble-ros-gz` — Gazebo Fortress ↔ ROS 2 meta-package
+- `ros-humble-ros-gz-sim` — Gazebo simulation bridge
+- `ros-humble-gazebo-ros2-control` — Gazebo hardware interface for `ros2_control`
+
+**Python packages (via `pip3`)**
+- `torch`, `torchvision`, `torchaudio` — PyTorch with CUDA 11.8 (`--extra-index-url https://download.pytorch.org/whl/cu118`)
+- `gym==0.23.1` — OpenAI Gym (pinned for SB3 compatibility)
+- `stable-baselines3[extra]` — SB3 with TensorBoard, OpenCV, and Hugging Face Hub extras
+- `numpy`, `scipy` — Scientific computing foundations
+
+**System libraries (via `apt`)**
+- `libgl1-mesa-glx`, `libgl1-mesa-dri`, `libglvnd-dev`, `mesa-utils` — OpenGL libraries required for Gazebo 3D rendering
+
+## Exposed Ports
+
+The Dockerfile exposes the following ports. Map them with `-p <host>:<container>` when you need to connect external tools:
+
+| Port | Service | Example use |
+|------|---------|-------------|
+| `11311` | ROS master / DDS discovery | Connect external ROS 2 nodes running on the host |
+| `11345` | Gazebo server | Access Gazebo via the Ignition transport network from the host |
+
+```bash
+# Example: expose both ports to the host
+docker run --gpus all --rm -it \
+  -p 11311:11311 \
+  -p 11345:11345 \
+  roboterrain
+```
+
+## Environment Variables
+
+The following environment variables are set in the image and inherited by all processes inside the container:
+
+| Variable | Value | Purpose |
+|----------|-------|---------|
+| `LANG` | `C.UTF-8` | Sets the system locale for correct UTF-8 text handling |
+| `LC_ALL` | `C.UTF-8` | Overrides all locale categories to UTF-8 |
+| `DEBIAN_FRONTEND` | `noninteractive` | Prevents `apt` from prompting for user input during the build |
+| `PATH` | `/opt/ros/humble/bin:$PATH` | Ensures ROS 2 CLI tools (`ros2`, `colcon`) are on the path |
+
+The `~/.bashrc` inside the container also sources both the ROS 2 underlay and the built workspace overlay automatically on every interactive shell start:
+
+```bash
+source /opt/ros/humble/setup.bash
+source /home/ros2_ws/install/setup.bash
+```

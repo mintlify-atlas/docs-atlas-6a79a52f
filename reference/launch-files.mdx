@@ -1,0 +1,292 @@
+---
+title: "ROS 2 Launch Files Reference"
+sidebarTitle: "Launch Files"
+description: "Reference for all RoboTerrain ROS 2 launch files including arguments, default worlds, robot models, and the Gazebo-ROS 2 bridge configuration."
+---
+
+RoboTerrain organises its simulation entry points as a family of ROS 2 Python launch files, all living under `roverrobotics_gazebo/launch/` in the `roverrobotics_ros2` package. Each launch file is purpose-built for a specific robot variant and sensor suite: the four-wheel-drive `rover_zero4wd` has its own file, and the Leo Rover family is split across five files covering the base configuration, LIDAR, depth camera, fisheye camera, and full Nav2 navigation stack. Every file follows the same structural pattern — declaring environment variables, starting Ignition Gazebo, spawning the robot model, and launching the `ros_gz_bridge` — so switching between configurations is straightforward. The `headless` argument available on Leo Rover launch files is especially important for RL training runs where the Gazebo GUI is unnecessary and only adds CPU overhead.
+
+---
+
+## 4wd_rover_gazebo.launch.py
+
+This is the primary launch file for the **Rover Zero 4WD** robot. It starts Ignition Gazebo with a configurable world, spawns the `rover_zero4wd` entity from the `camera_rover_4wd.sdf` model, and establishes the full ROS 2–Gazebo topic bridge.
+
+**Package:** `roverrobotics_gazebo`
+
+```bash
+ros2 launch roverrobotics_gazebo 4wd_rover_gazebo.launch.py
+```
+
+### Launch Arguments
+
+| Argument | Type | Default | Description |
+|---|---|---|---|
+| `use_sim_time` | bool | `true` | When true, all nodes consume the Gazebo simulation clock via `/clock` instead of wall time |
+| `world` | string | `island.sdf` | Filename of the world to load, resolved relative to the `roverrobotics_gazebo/worlds/` share directory |
+
+Override arguments at the command line:
+
+```bash
+ros2 launch roverrobotics_gazebo 4wd_rover_gazebo.launch.py world:=maze_clean.sdf
+```
+
+<Note>
+  All available world files are listed in the worlds documentation. The `world` argument accepts any `.sdf` or `.world` filename present in the `roverrobotics_gazebo/worlds/` directory.
+</Note>
+
+### Spawned Robot
+
+| Property | Value |
+|---|---|
+| Entity name | `rover_zero4wd` |
+| SDF model | `roverrobotics_description/urdf/camera_rover_4wd.sdf` |
+| Spawn position | x=`0`, y=`0`, z=`1.0` |
+| Spawn package | `ros_gz_sim` (`create` executable) |
+
+### ros_gz_bridge Topics
+
+The bridge is started by the `ros_gz_bridge` `parameter_bridge` executable. The full set of bridged arguments:
+
+```
+/cmd_vel@geometry_msgs/msg/Twist@ignition.msgs.Twist
+/clock@rosgraph_msgs/msg/Clock[ignition.msgs.Clock
+/odometry/wheels@nav_msgs/msg/Odometry@ignition.msgs.Odometry
+/tf@tf2_msgs/msg/TFMessage[ignition.msgs.Pose_V
+/joint_states@sensor_msgs/msg/JointState[gz.msgs.Model
+/scan@sensor_msgs/msg/LaserScan@gz.msgs.LaserScan
+/imu/data@sensor_msgs/msg/Imu@gz.msgs.IMU
+/camera/image_raw@sensor_msgs/msg/Image@gz.msgs.Image
+/camera_info@sensor_msgs/msg/CameraInfo@gz.msgs.CameraInfo
+/world/default/dynamic_pose/info@geometry_msgs/msg/PoseArray[ignition.msgs.Pose_V
+```
+
+### Environment Variables
+
+| Variable | Value | Purpose |
+|---|---|---|
+| `IGN_GAZEBO_RESOURCE_PATH` | `<cpr_office_models>:<pkg_source>:<pkg_source_parent>` | Colon-separated list of directories Ignition searches for world and model resources |
+| `IGN_GAZEBO_MODEL_PATH` | `<pkg_source>` | Additional model search path pointing directly to the `roverrobotics_gazebo` source directory |
+
+Both variables are set via `SetEnvironmentVariable` before the `ign gazebo` process is launched. The resource path includes both the installed package directory and the source tree directory so that models edited in the source directory are picked up without requiring `colcon build`.
+
+---
+
+## Leo Rover Launch Files
+
+The Leo Rover is supported by five launch files, each adding a different sensor configuration or navigation capability. All Leo launch files share the same `use_sim_time` and `world` arguments as the 4WD file, and all spawn the `leo_rover` entity at (0, 0, 1.0).
+
+### Leo_rover_gazebo.launch.py — Base Configuration
+
+The baseline Leo Rover launch file. Spawns `leo_sim.sdf` from the `leo_description` package with a standard RGB camera and IMU, but no LIDAR.
+
+**Package:** `roverrobotics_gazebo`
+
+```bash
+ros2 launch roverrobotics_gazebo Leo_rover_gazebo.launch.py
+```
+
+| Argument | Default | Description |
+|---|---|---|
+| `use_sim_time` | `true` | Use Gazebo simulation clock |
+| `world` | `office_cpr_construction.world` | Default world differs from the 4WD file — targets the CPR construction site |
+
+**Spawned model:** `leo_description/sdf/leo_sim.sdf`
+
+The bridge configuration is identical to the 4WD file, bridging all ten core topics including `/scan` and `/camera/image_raw`.
+
+---
+
+### Leo_rover_lidar.launch.py — LIDAR Configuration
+
+Adds a 2-D GPU LIDAR sensor to the Leo Rover for Nav2 obstacle avoidance and RL scan-based policies. Also publishes static transforms required by the Nav2 costmap.
+
+```bash
+ros2 launch roverrobotics_gazebo Leo_rover_lidar.launch.py
+ros2 launch roverrobotics_gazebo Leo_rover_lidar.launch.py headless:=true
+```
+
+| Argument | Default | Description |
+|---|---|---|
+| `use_sim_time` | `true` | Use Gazebo simulation clock |
+| `world` | `inspection_boxes_v4.world` | Inspection environment with obstacle boxes; optimised for Active Vision research |
+| `headless` | `false` | When `true`, runs `ign gazebo -s -r` (server + run, no GUI) to reduce CPU load during training |
+
+**Spawned model:** `leo_description/sdf/leo_lidar.sdf`
+
+**Additional nodes launched:**
+
+- `static_transform_publisher` — `base_link` → `lidar_link` at offset (0.174, 0, 0.6) with yaw π (from SDF pose). Required for Nav2 costmap transforms.
+- `static_transform_publisher` — `base_footprint` → `base_link` at identity. Nav2 expects `base_footprint` as `robot_base_frame`.
+- `PoseConverterNode` (`ign_ros2_Nav2_topics.py`) launched as a subprocess for world `inspect` / robot `leo_rover`.
+
+**Bridge changes vs base:** `/odometry/wheels` is replaced by `/odom_ground_truth` (from the pose converter); `/tf` bridge is disabled to avoid conflicts with the Nav2 TF tree; `/scan` uses `ignition.msgs.LaserScan` (not `gz.msgs.LaserScan`).
+
+---
+
+### Leo_rover_depth.launch.py — Depth Camera Configuration
+
+Equips the Leo Rover with an RGBD depth camera for point-cloud-based perception and Active Vision experiments.
+
+```bash
+ros2 launch roverrobotics_gazebo Leo_rover_depth.launch.py
+ros2 launch roverrobotics_gazebo Leo_rover_depth.launch.py headless:=true world:=island.sdf
+```
+
+| Argument | Default | Description |
+|---|---|---|
+| `use_sim_time` | `true` | Use Gazebo simulation clock |
+| `world` | `island.sdf` | Open outdoor terrain; suitable for depth-based traversal learning |
+| `headless` | `false` | Headless mode for training |
+
+**Spawned model:** `leo_description/sdf/leo_depth.sdf`
+
+**Additional nodes launched:**
+
+- `static_transform_publisher` — `base_footprint` → `camera_link` at offset (0.1, 0, 0.35) with pitch −0.35 rad.
+
+**Additional bridged topics:**
+
+```
+/depth_camera/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked
+/depth_camera/depth_image@sensor_msgs/msg/Image[gz.msgs.Image
+/depth_camera/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo
+```
+
+Actor pose topics for island/moon worlds are also bridged (`/triangle_actor/pose`, `/triangle2_actor/pose`, `/triangle3_actor/pose`).
+
+---
+
+### Leo_rover_fisheye.launch.py — Fisheye Camera (Active Vision)
+
+The primary launch file for **Active Vision** RL experiments. Uses `leo_sim_fisheye.sdf` which mounts a wide-angle fisheye camera. Includes the `headless` argument for GPU-accelerated training without a display. Also launches `PoseConverterNode` automatically.
+
+```bash
+ros2 launch roverrobotics_gazebo Leo_rover_fisheye.launch.py
+ros2 launch roverrobotics_gazebo Leo_rover_fisheye.launch.py headless:=true
+ros2 launch roverrobotics_gazebo Leo_rover_fisheye.launch.py world:=inspection_boxes_v3.world headless:=true
+```
+
+| Argument | Default | Description |
+|---|---|---|
+| `use_sim_time` | `true` | Use Gazebo simulation clock |
+| `world` | `inspection_boxes_v4.world` | Inspection world with reduced-density obstacles (v4 removes some boxes from v3) |
+| `headless` | `false` | `true` → `ign gazebo -s -r` (server+run, no GUI). Set to `true` for all RL training runs to reduce CPU usage. |
+
+**Spawned model:** `leo_description/sdf/leo_sim_fisheye.sdf`
+
+**Headless mode detail:**
+
+```python
+# GUI mode (headless=false)
+cmd=['ign', 'gazebo', world_path]
+
+# Headless mode (headless=true)
+cmd=['ign', 'gazebo', '-s', '-r', world_path]
+```
+
+**Additional processes launched:**
+
+- `PoseConverterNode` — started as a `python3` subprocess with arguments `inspect leo_rover`. Publishes `/rover/pose_array`, `/odom_ground_truth`, and the `odom → base_footprint` TF transform.
+
+**Additional bridged topics (inspect world):**
+
+```
+/linear_actor/pose@geometry_msgs/msg/Pose[gz.msgs.Pose
+/diag_actor/pose@geometry_msgs/msg/Pose[gz.msgs.Pose
+/triangle_actor/pose@geometry_msgs/msg/Pose[gz.msgs.Pose
+/world/inspect/set_pose@ros_gz_interfaces/srv/SetEntityPose
+```
+
+<Note>
+  The `/scan` topic is **not** included in the fisheye bridge configuration. The fisheye SDF model does not carry a 2-D LIDAR. If your RL policy requires LIDAR input, use `Leo_rover_lidar.launch.py` instead.
+</Note>
+
+---
+
+### leo_nav2_lidar_launch.py — Nav2 Navigation Stack
+
+Launches the complete ROS 2 Nav2 navigation stack configured for **mapless, LiDAR-only obstacle avoidance** using the `odom` frame as the global frame. No map server or AMCL is included. This launch file is intended to run **alongside** one of the Leo Rover simulation launch files, not as a standalone launcher.
+
+```bash
+# First start the simulation (e.g. Leo with LIDAR)
+ros2 launch roverrobotics_gazebo Leo_rover_lidar.launch.py
+
+# Then in a second terminal, start Nav2
+ros2 launch roverrobotics_gazebo leo_nav2_lidar_launch.py
+```
+
+| Argument | Default | Description |
+|---|---|---|
+| `use_sim_time` | `true` | Must match the simulation launch file setting |
+| `params_file` | `~/src/RoboTerrain/ros2_ws/src/roverrobotics_ros2/roverrobotics_gazebo/config/leo_nav2_lidar_params.yaml` | Full path to the Nav2 YAML parameter file |
+
+**Nav2 nodes launched:**
+
+| Node Name | Package | Executable | Role |
+|---|---|---|---|
+| `controller_server` | `nav2_controller` | `controller_server` | DWB local planner — generates velocity commands |
+| `planner_server` | `nav2_planner` | `planner_server` | NavFn global planner — computes global path to goal |
+| `behavior_server` | `nav2_behaviors` | `behavior_server` | Recovery behaviours (spin, back-up, wait) |
+| `bt_navigator` | `nav2_bt_navigator` | `bt_navigator` | Behaviour-tree executor — orchestrates the full nav pipeline |
+| `smoother_server` | `nav2_smoother` | `smoother_server` | Post-processes global paths for smoother execution |
+| `velocity_smoother` | `nav2_velocity_smoother` | `velocity_smoother` | Applies acceleration limits to outgoing `/cmd_vel` |
+| `waypoint_follower` | `nav2_waypoint_follower` | `waypoint_follower` | Supports sequential multi-goal navigation missions |
+| `lifecycle_manager_navigation` | `nav2_lifecycle_manager` | `lifecycle_manager` | Manages the Nav2 node lifecycle (configure → activate) |
+
+All nodes receive `use_sim_time` and the shared `params_file` as parameters.
+
+---
+
+## Usage Examples
+
+### Standard RL Training Session (4WD Rover)
+
+```bash
+# Terminal 1 — simulation
+ros2 launch roverrobotics_gazebo 4wd_rover_gazebo.launch.py world:=maze_clean.sdf
+
+# Terminal 2 — metrics logging
+ros2 run rover_metrics metrics_node
+```
+
+### Active Vision Training (Leo Rover, headless)
+
+```bash
+# Terminal 1 — headless simulation with fisheye camera
+ros2 launch roverrobotics_gazebo Leo_rover_fisheye.launch.py headless:=true
+
+# Terminal 2 — metrics logging
+ros2 run rover_metrics metrics_node
+```
+
+### Nav2 Navigation Demo
+
+```bash
+# Terminal 1 — Leo Rover with LIDAR in inspect world
+ros2 launch roverrobotics_gazebo Leo_rover_lidar.launch.py
+
+# Terminal 2 — Nav2 stack
+ros2 launch roverrobotics_gazebo leo_nav2_lidar_launch.py
+
+# Terminal 3 — optional: RViz2 for goal publishing
+rviz2
+```
+
+### Override World at Launch
+
+```bash
+# Leo LIDAR rover in the island world
+ros2 launch roverrobotics_gazebo Leo_rover_lidar.launch.py world:=island.sdf
+
+# 4WD rover in a simple maze
+ros2 launch roverrobotics_gazebo 4wd_rover_gazebo.launch.py world:=maze_simple.sdf
+```
+
+<Note>
+  All available worlds are listed in the worlds documentation. The `world` argument accepts any filename present in the `roverrobotics_gazebo/worlds/` share directory.
+</Note>
+
+<Tip>
+  When running RL training experiments, always pass `headless:=true` to Leo Rover launch files. This starts Gazebo in server-only mode (`-s -r`), skipping the GUI renderer and freeing significant GPU and CPU resources for the training process.
+</Tip>

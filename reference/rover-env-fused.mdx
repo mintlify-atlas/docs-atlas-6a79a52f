@@ -1,0 +1,277 @@
+---
+title: "RoverEnvFused: Vision-Fused Gymnasium Environment API"
+sidebarTitle: "RoverEnvFused"
+description: "API reference for RoverEnvFused — the 3-channel fused vision Gymnasium environment used with the Active Vision and DreamerV3 pipeline in RoboTerrain."
+---
+
+`RoverEnvFused` is a Gymnasium-compatible environment that replaces the raw LIDAR/IMU sensor stack of `RoverEnv` with a rich **3-channel fused image observation** delivered via POSIX shared memory. Each 96×96 frame is composed of three co-registered visual channels: a grayscale camera view, a YOLO pedestrian-detection mask, and a monocular depth map. This design lets the environment consume pre-processed, inference-ready observations from a separate Active Vision pipeline process without the latency of inter-process ROS2 messaging. The continuous-action variant is implemented in `ros2_ws/src/sb3/environments/leo_rover_env_fused.py`.
+
+---
+
+## Constructor
+
+```python
+RoverEnvFused(
+    size=(96, 96),
+    length=6000,
+    scan_topic='/scan',
+    imu_topic='/imu/data',
+    cmd_vel_topic='/cmd_vel',
+    world_n='inspect',
+    connection_check_timeout=30,
+    lidar_points=32,
+    max_lidar_range=12.0,
+    rl_obs_name='rl_observation',
+)
+```
+
+<ParamField path="size" type="tuple" default="(96, 96)">
+  Height and width of the fused observation image in pixels. Internally stored as `rl_obs_height = 96` and `rl_obs_width = 96`. Must match the dimensions written by the Active Vision inference pipeline into shared memory.
+</ParamField>
+
+<ParamField path="length" type="int" default="6000">
+  Maximum number of environment steps per episode — three times longer than `RoverEnv`'s default of 2000. The larger budget accommodates the richer observation space and slower per-step wall-clock time from image-based policies.
+</ParamField>
+
+<ParamField path="scan_topic" type="str" default="'/scan'">
+  ROS2 topic name for `sensor_msgs/LaserScan` messages. LIDAR data is retained for internal reward calculations even though it is not part of the primary observation returned to the agent.
+</ParamField>
+
+<ParamField path="imu_topic" type="str" default="'/imu/data'">
+  ROS2 topic name for `sensor_msgs/Imu` messages. In the fused environment the IMU subscriber is disabled by default (commented out); orientation is instead extracted from the `/rover/pose_array` quaternion inside `pose_array_callback`.
+</ParamField>
+
+<ParamField path="cmd_vel_topic" type="str" default="'/cmd_vel'">
+  ROS2 topic for publishing `geometry_msgs/Twist` velocity commands. The heading PID output and the agent's requested speed are combined into a single `Twist` message per `step()` call.
+</ParamField>
+
+<ParamField path="world_n" type="str" default="'inspect'">
+  Simulated world name. Accepted values: `'inspect'`, `'moon'`, `'maze'`. The string `'island'` is silently remapped to `'moon'` at construction time. The world name controls spawn ranges, goal ranges, and out-of-bounds thresholds identically to `RoverEnv`.
+</ParamField>
+
+<ParamField path="connection_check_timeout" type="int" default="30">
+  Seconds to wait for initial sensor data when verifying the robot connection. The robot connection check is currently disabled in `RoverEnvFused`; this parameter is reserved for future use.
+</ParamField>
+
+<ParamField path="lidar_points" type="int" default="32">
+  Downsampled LIDAR resolution. Retained from `RoverEnv` for reward computation; not included in the agent observation.
+</ParamField>
+
+<ParamField path="max_lidar_range" type="float" default="12.0">
+  Maximum valid LIDAR range in metres used when clipping raw scan values.
+</ParamField>
+
+<ParamField path="rl_obs_name" type="str" default="'rl_observation'">
+  Name of the POSIX shared memory segment written by the Active Vision inference pipeline. The environment attaches to this segment at construction time using `multiprocessing.shared_memory.SharedMemory`. If the segment does not exist the process calls `exit(1)` with a descriptive error.
+</ParamField>
+
+<Note>
+  Passing `world_n='island'` is equivalent to `world_n='moon'`. The mapping `if world_n == 'island': self.world_name = 'moon'` is applied unconditionally in `__init__`, so all internal paths, pose-service endpoints, and spawn ranges use `'moon'`.
+</Note>
+
+---
+
+## Observation Space
+
+The observation is a `gymnasium.spaces.Dict` with five keys. The primary key is `fused_image`, which carries the 3-channel visual observation sourced from shared memory:
+
+```python
+spaces.Dict({
+    'fused_image': spaces.Box(
+        low=0.0,
+        high=1.0,
+        shape=(96, 96, 3),   # (H, W, channels)
+        dtype=np.float32
+    ),
+    'pose': spaces.Box(
+        low=np.array([-30.0, -30.0, -10.0]),
+        high=np.array([ 30.0,  30.0,  10.0]),
+        dtype=np.float32
+    ),
+    'imu': spaces.Box(
+        low=np.array([-np.pi, -np.pi, -np.pi]),
+        high=np.array([ np.pi,  np.pi,  np.pi]),
+        dtype=np.float32
+    ),
+    'target': spaces.Box(
+        low=np.array([0,    -np.pi]),
+        high=np.array([100,  np.pi]),
+        shape=(2,),
+        dtype=np.float32
+    ),
+    'velocities': spaces.Box(
+        low=np.array([-10.0, -10.0]),
+        high=np.array([ 10.0,  10.0]),
+        shape=(2,),
+        dtype=np.float32
+    ),
+})
+```
+
+### Fused Image Channels
+
+| Channel Index | Content | Source |
+|---------------|---------|--------|
+| `[:, :, 0]` | Grayscale camera image | RGB camera → greyscale conversion |
+| `[:, :, 1]` | Pedestrian detection mask (heatmap) | YOLO inference output |
+| `[:, :, 2]` | Monocular depth map | Depth estimation model |
+
+All channel values are normalised to `[0.0, 1.0]` as `float32` by the inference pipeline before being written to shared memory.
+
+### Auxiliary Observation Keys
+
+| Key | Shape | Description |
+|-----|-------|-------------|
+| `pose` | `(3,)` | Ground-truth rover position `[x, y, z]` from `/rover/pose_array`. |
+| `imu` | `(3,)` | Orientation `[pitch, roll, yaw]` in radians extracted from the pose quaternion. |
+| `target` | `(2,)` | `[distance_m, relative_angle_rad]` to the current navigation goal. |
+| `velocities` | `(2,)` | `[linear_velocity, angular_velocity]` from `/odometry/wheels`. |
+
+---
+
+## Shared Memory Interface
+
+`RoverEnvFused` reads its primary observation from a POSIX shared memory segment rather than a ROS2 topic. This approach eliminates serialisation overhead and allows the inference pipeline to run in a separate process (potentially on a GPU) at its own frame rate.
+
+### Memory Layout
+
+```
+Offset 0      : float64  — Unix timestamp of the most-recent frame (8 bytes)
+Offset 8      : uint32   — Valid flag; 1 = frame is ready to read (4 bytes)
+Offset 12     : float32[] — Flattened (H × W × 3) observation array
+                            96 × 96 × 3 × 4 bytes = 110,592 bytes
+```
+
+### Read Protocol
+
+`get_fused_observation()` polls the shared memory in a busy-wait loop with 1 ms sleep intervals. It compares the current timestamp at offset 0 against the last-seen timestamp. When both the timestamp has changed **and** the valid flag equals `1`, it reads the observation array, reshapes it to `(96, 96, 3)`, and returns a copy.
+
+```python
+def get_fused_observation(self) -> np.ndarray:
+    """Block until a new frame arrives, then return the fused observation."""
+    buf = self.rl_obs_shm.buf
+    header_size = 12        # 8-byte timestamp + 4-byte valid flag
+    data_size   = 96 * 96 * 3 * 4  # float32 elements
+
+    while True:
+        ts         = struct.unpack_from('<d', buf, 0)[0]
+        valid_flag = struct.unpack_from('<L', buf, 8)[0]
+
+        if ts != self._last_obs_ts and valid_flag == 1:
+            self._last_obs_ts = ts
+            raw = bytes(buf[header_size : header_size + data_size])
+            obs = np.frombuffer(raw, dtype=np.float32).reshape(96, 96, 3)
+            return obs.copy()
+
+        time.sleep(0.001)
+```
+
+<Warning>
+  The Active Vision inference pipeline **must** be running and actively writing frames to the shared memory segment before `RoverEnvFused` is instantiated. If the named segment (`rl_obs_name`) does not exist the constructor calls `exit(1)`. If the pipeline stalls mid-episode, `get_fused_observation()` will block indefinitely until a new valid frame appears.
+</Warning>
+
+### Attaching at Construction
+
+```python
+self.rl_obs_shm = shared_memory.SharedMemory(name=self.rl_obs_name)
+```
+
+The segment is opened in **attach-only** mode; `RoverEnvFused` never creates or destroys the segment. The resource-tracker entry is unregistered immediately after attach to suppress Python's shutdown warning about inherited shared memory handles.
+
+---
+
+## Action Space
+
+The action space is identical to `RoverEnv` with one difference: the minimum linear speed is **−0.6** instead of **−1.0**, limiting the rover's reverse capability:
+
+```python
+spaces.Box(
+    low=np.array([-0.6, -np.pi]),
+    high=np.array([ 1.0,  np.pi]),
+    dtype=np.float32
+)
+```
+
+| Index | Meaning | Range |
+|-------|---------|-------|
+| `action[0]` | Target linear speed (m/s) | `[-0.6, 1.0]` |
+| `action[1]` | Desired heading offset (rad) | `[-π, π]` |
+
+---
+
+## Key Methods
+
+### `step(action) -> tuple`
+
+```python
+observation, reward, done, truncated, info = env.step(action)
+```
+
+Executes one environment step:
+
+1. Checks for flip, stuck-in-collision, stuck, and out-of-bounds conditions with associated terminal penalties.
+2. Decodes `action` into `speed` and `relative_heading_command`.
+3. Computes absolute target heading and calls `heading_controller()` to get angular velocity.
+4. Publishes a `Twist` command.
+5. Calls `get_observation()`, which blocks on `get_fused_observation()` until a fresh shared-memory frame is available.
+6. Calls `task_reward(observation)` — the fused variant passes the full observation dict so the reward can inspect the pedestrian heatmap channel.
+7. Spins the ROS2 node once (`timeout_sec=0.001`) to flush callbacks.
+
+---
+
+### `reset(seed=None, options=None) -> tuple`
+
+```python
+observation, info = env.reset()
+```
+
+Identical reset logic to `RoverEnv`: stops the rover, teleports it via the Ignition Gazebo service, randomises the goal position, spins for 10 seconds, and returns the initial observation. The initial observation includes a fresh fused image read from shared memory.
+
+---
+
+### `close()`
+
+```python
+env.close()
+```
+
+1. Calls `self.rl_obs_shm.close()` to detach from the shared memory segment (does **not** unlink it — the inference pipeline owns the segment lifetime).
+2. Destroys the ROS2 node and calls `rclpy.shutdown()`.
+
+---
+
+## Usage with Active Vision Pipeline
+
+The following snippet shows the recommended pattern for launching `RoverEnvFused` alongside DreamerV3 or a Stable-Baselines3 policy:
+
+```python
+from environments.leo_rover_env_fused import RoverEnvFused
+from stable_baselines3 import PPO
+
+# 1. Start the Active Vision inference pipeline in a separate process FIRST.
+#    It must create the shared memory segment named 'rl_observation'
+#    and begin writing frames before the environment is instantiated.
+
+# 2. Instantiate the environment — will attach to the shared memory segment.
+env = RoverEnvFused(
+    size=(96, 96),
+    length=6000,
+    world_n='moon',
+    rl_obs_name='rl_observation',  # must match the pipeline's segment name
+)
+
+# 3. Train a policy that consumes the Dict observation.
+model = PPO(
+    policy='MultiInputPolicy',
+    env=env,
+    verbose=1,
+)
+model.learn(total_timesteps=1_000_000)
+
+# 4. Clean up — detaches shared memory and shuts down ROS2.
+env.close()
+```
+
+<Note>
+  When using DreamerV3, wrap the environment in a `gym.wrappers.FlattenObservation` or configure the DreamerV3 encoder to consume the `Dict` space directly. The `fused_image` key should be routed to the convolutional encoder; the scalar keys (`pose`, `imu`, `target`, `velocities`) should be processed by an MLP encoder.
+</Note>

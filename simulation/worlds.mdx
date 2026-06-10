@@ -1,0 +1,186 @@
+---
+title: "Gazebo Fortress Worlds for Off-Road Navigation"
+sidebarTitle: "Worlds"
+description: "RoboTerrain ships with inspection, maze, island, rubicon, and construction Gazebo Fortress worlds for benchmarking off-road robot navigation algorithms."
+---
+
+RoboTerrain includes a diverse collection of Gazebo Fortress simulation worlds designed to challenge mobile robots across a range of unstructured and semi-structured terrains. All world files live under `ros2_ws/src/roverrobotics_ros2/roverrobotics_gazebo/worlds/` and are selected at launch time via the `world` argument in the respective launch file. Mars terrain models from the Leo Rover simulator package are located separately under `ros2_ws/src/leo_simulator-ros2/leo_gz_worlds/worlds/`.
+
+## Available Worlds
+
+<CardGroup cols={2}>
+  <Card title="Inspection Worlds" icon="building">
+    Industrial inspection environments filled with boxes and obstacles for navigation benchmarking.
+  </Card>
+  <Card title="Maze Worlds" icon="grid-2">
+    Structured corridor environments for evaluating path planning and obstacle avoidance.
+  </Card>
+  <Card title="Outdoor Terrain Worlds" icon="mountain">
+    Natural and extreme off-road terrain for testing terrain traversal and VORT metrics.
+  </Card>
+  <Card title="MarsYard Worlds" icon="planet-ringed">
+    Photorealistic Mars analog terrain models for planetary robotics research.
+  </Card>
+</CardGroup>
+
+### Inspection Worlds
+
+| File | Description |
+|---|---|
+| `inspection_simple.world` | A sparse open inspection area with minimal clutter — ideal for baseline navigation runs and rapid iteration. |
+| `inspection_boxes_v4.world` | Industrial inspection site populated with crates and boxes. The `v4` variant balances obstacle density for active vision and social navigation research. Earlier variants (`v3`, `x10`, `x10_v2`) are also available for denser configurations. |
+
+### Maze Worlds
+
+| File | Description |
+|---|---|
+| `maze_simple.sdf` | A clean, rectangular maze with wide corridors — a good starting point for evaluating global planners. |
+| `maze_pillars.sdf` | A maze variant with pillar obstacles instead of walls, creating a partially occluded navigation challenge. |
+| `maze_clean.sdf` | A streamlined maze without visual noise, intended for pure planning benchmarks. |
+
+### Outdoor Terrain Worlds
+
+| File | Description |
+|---|---|
+| `island.sdf` | An outdoor terrain island with varied elevation and natural ground features. This is the **current default world** for `4wd_rover_gazebo.launch.py`. |
+| `rubicon.sdf` | Extreme off-road rocky terrain modelled after the Rubicon Trail. Use this world to stress-test VORT (Velocity Over Rough Terrain) and terrain-crossing performance. |
+| `office_cpr_construction.sdf` / `office_cpr_construction.world` | Clearpath Robotics CPR construction site — a semi-structured outdoor environment with ground clutter, ramps, and construction props. Requires the Clearpath model assets to be present (see `IGN_GAZEBO_RESOURCE_PATH` in the launch file). |
+
+### MarsYard Worlds
+
+These worlds are provided by the `leo_gz_worlds` package at `ros2_ws/src/leo_simulator-ros2/leo_gz_worlds/worlds/`.
+
+| File | Description |
+|---|---|
+| `marsyard2020.sdf` | MarsYard 2020 photorealistic analog terrain model. |
+| `marsyard2021.sdf` | Updated 2021 MarsYard terrain with revised surface topology. |
+| `marsyard2022.sdf` | Latest MarsYard 2022 terrain — highest fidelity, recommended for planetary navigation studies. |
+
+<Note>
+  The `default_value='island.sdf'` is currently active in `4wd_rover_gazebo.launch.py`. All other world lines are commented out and can be enabled by following the steps below.
+</Note>
+
+---
+
+## Switching Worlds
+
+The active world is controlled by the `DeclareLaunchArgument` block near the top of the launch file. Only one `default_value` line should be uncommented at a time.
+
+<Steps>
+  <Step title="Open the launch file">
+    ```bash
+    nano ros2_ws/src/roverrobotics_ros2/roverrobotics_gazebo/launch/4wd_rover_gazebo.launch.py
+    ```
+  </Step>
+  <Step title="Uncomment the desired world">
+    Locate the `declare_world_cmd` block (around line 24) and comment out the active line, then uncomment the world you want:
+
+    ```python
+    declare_world_cmd = DeclareLaunchArgument(
+        'world',
+        #default_value='inspection_simple.world',
+        #default_value='office_cpr_construction.world',
+        default_value='island.sdf',      # <-- currently active
+
+        #default_value='simplecave3.sdf',
+        #default_value='maze_simple.sdf',
+        #default_value='maze_pillars.sdf',
+        #default_value='inspection.world',
+        #default_value='maze_clean.sdf',
+        #default_value='maze_empty.sdf',
+        description='World file to use in Gazebo')
+    ```
+
+    For example, to switch to the Rubicon world:
+
+    ```python
+    declare_world_cmd = DeclareLaunchArgument(
+        'world',
+        #default_value='island.sdf',
+        default_value='rubicon.sdf',     # <-- now active
+        description='World file to use in Gazebo')
+    ```
+  </Step>
+  <Step title="Rebuild the workspace">
+    ```bash
+    cd ros2_ws
+    colcon build
+    source install/setup.bash
+    ```
+  </Step>
+  <Step title="Launch the simulation">
+    ```bash
+    ros2 launch roverrobotics_gazebo 4wd_rover_gazebo.launch.py
+    ```
+  </Step>
+</Steps>
+
+<Tip>
+  During RL training runs, pass `headless:=true` to suppress the Gazebo GUI and reduce CPU/GPU load significantly:
+
+  ```bash
+  ros2 launch roverrobotics_gazebo Leo_rover_fisheye.launch.py headless:=true
+  ```
+
+  Headless mode runs only the Gazebo server (`ign gazebo -s -r`), which is sufficient for physics simulation and sensor data generation.
+</Tip>
+
+---
+
+## Leo Rover Worlds
+
+`Leo_rover_fisheye.launch.py` uses its own `DeclareLaunchArgument` block and defaults to `inspection_boxes_v4.world`. The available worlds for the Leo Rover pipeline include the inspection, construction, and island environments.
+
+<Steps>
+  <Step title="Open the Leo Rover fisheye launch file">
+    ```bash
+    nano ros2_ws/src/roverrobotics_ros2/roverrobotics_gazebo/launch/Leo_rover_fisheye.launch.py
+    ```
+  </Step>
+  <Step title="Select the desired world">
+    ```python
+    declare_world_cmd = DeclareLaunchArgument(
+        'world',
+        #default_value='inspection_boxes_x10_v2.world',  # social nav testing (MDPI publication)
+        #default_value='inspection_boxes_v3.world',       # dense boxes for Active Vision
+        default_value='inspection_boxes_v4.world',        # <-- current default (Active Vision)
+        #default_value='office_cpr_construction.world',
+        #default_value='island.sdf',
+        #default_value='rubicon.sdf',
+        description='World file to use in Gazebo')
+    ```
+  </Step>
+  <Step title="Rebuild and relaunch">
+    ```bash
+    cd ros2_ws
+    colcon build
+    source install/setup.bash
+    ros2 launch roverrobotics_gazebo Leo_rover_fisheye.launch.py
+    ```
+  </Step>
+</Steps>
+
+<Note>
+  The `world_name` variable inside `Leo_rover_fisheye.launch.py` is hardcoded to `'inspect'` (used for pose bridge and actor topics). If you switch to the construction or island world, update `world_name` in the launch file to match, or the `ros_gz_bridge` dynamic pose topic will not resolve correctly.
+</Note>
+
+---
+
+## Additional Worlds
+
+<Accordion title="Other worlds in the worlds/ directory">
+  The `worlds/` directory also contains several experimental and legacy environments:
+
+  | File | Notes |
+  |---|---|
+  | `simplecave3.sdf` | Narrow cave-like passage — useful for confined-space navigation research. |
+  | `depot.sdf` | Warehouse depot layout. |
+  | `fortress.sdf` | Fortress-style walled environment. |
+  | `agriculture.world` | Agricultural field setting. |
+  | `pillars.sdf` | Open area with scattered pillar obstacles. |
+  | `maze_and_person.sdf` | Maze with a static person actor pre-placed. |
+  | `maze_empty.sdf` | Empty maze shell with no internal obstacles. |
+  | `yosemite.world` | Yosemite terrain model. |
+
+  These are not currently wired into the primary launch files but can be added by following the same world-switching procedure above.
+</Accordion>

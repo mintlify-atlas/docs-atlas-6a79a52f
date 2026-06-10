@@ -1,0 +1,72 @@
+---
+title: "RoboTerrain: Off-Road Robot RL Research Framework"
+sidebarTitle: "Introduction"
+description: "RoboTerrain provides Gymnasium environments, Gazebo Fortress worlds, and automated metrics for training and evaluating reinforcement learning agents on unstructured terrain."
+---
+
+RoboTerrain is a comprehensive research framework for off-road mobile robot navigation, combining **ROS 2 Humble**, **Gazebo Fortress**, and **PyTorch** with **Stable Baselines3 (SB3)** and a **Gymnasium** interface for reinforcement learning. It ships ready-to-use simulation models for multiple robot platforms, a collection of challenging outdoor worlds, and an automated metrics pipeline — so researchers can go from environment setup to publication-quality evaluation data without rebuilding common infrastructure from scratch.
+
+## Key Components
+
+<CardGroup cols={2}>
+  <Card title="Gymnasium Environments" icon="dumbbell">
+    Modular Gymnasium-compatible environments expose LiDAR, IMU, odometry, and optional camera observations. Environments support both state-based and vision-fused inputs and wrap seamlessly with SB3's `VecNormalize` and `DummyVecEnv` utilities.
+  </Card>
+  <Card title="Gazebo Simulation" icon="cube">
+    Gazebo Fortress worlds range from structured industrial inspection sites to unstructured off-road terrain. A full ROS 2 ↔ Ignition bridge streams sensor data (`/scan`, `/imu/data`, `/camera/image_raw`, `/odometry/wheels`) into the RL training loop in real time.
+  </Card>
+  <Card title="RL Agents" icon="robot">
+    Pre-trained Soft Actor-Critic (SAC) and Proximal Policy Optimization (PPO) agents are included alongside training scripts with configurable hyperparameters, checkpoint callbacks, normalization statistics persistence, and TensorBoard logging.
+  </Card>
+  <Card title="Metrics System" icon="chart-line">
+    The `rover_metrics` ROS 2 node logs timestamped CSV files capturing Success Rate (SR), Total Collisions (TC), Mean Time to Traverse (MTT), Traverse Rate (TR), and Velocity Over Rough Terrain (VORT). A companion CLI tool generates publication-ready comparison plots across multiple trials.
+  </Card>
+</CardGroup>
+
+## Supported Robots
+
+RoboTerrain ships URDF/SDF models and ROS 2 control configurations for three platforms, each suited to different research questions:
+
+- **Leo Rover** — A compact four-wheel-drive rover with a forward-facing camera, well-suited for vision-based navigation research on moderate terrain. Licensed under the MIT License from the Leo Rover open-source repository.
+
+- **Rover Zero 4WD** — The primary platform used in published experiments. A rugged skid-steer robot capable of climbing steep, irregular surfaces. The `camera_rover_4wd.sdf` model is spawned by default in the Gazebo launch file. Licensed under Apache 2.0 from Rover Robotics.
+
+- **Clearpath Husky** — A widely-used outdoor research platform with a large payload capacity. Included with Clearpath terrain models under the BSD License, making it straightforward to compare results against existing Husky benchmarks.
+
+## Available Worlds
+
+Worlds are loaded via the `4wd_rover_gazebo.launch.py` launch file by setting the `world` argument. The following environments are available:
+
+| World | File | Description |
+|---|---|---|
+| **Inspection** | `inspection_simple.world` | Industrial facility with solar panels, scaffolding, and confined corridors — models real-world infrastructure inspection scenarios. |
+| **Maze** | `maze_simple.sdf` / `maze_pillars.sdf` / `maze_clean.sdf` | Procedurally arranged wall mazes of varying complexity for testing pure navigation and path-planning algorithms. |
+| **Island / Moon** | `island.sdf` | Open unstructured terrain resembling an island or lunar surface with natural elevation changes and sparse obstacles. This is the **default world** in the launch file. |
+| **Rubicon** | *(rubicon world)* | A high-difficulty off-road course modelled on extreme terrain, designed to stress-test traversability and torque control. |
+| **Construction** | `office_cpr_construction.world` | A Clearpath-derived construction site environment with dynamic clutter, ramps, and elevation changes. |
+
+## Research Publications
+
+RoboTerrain underpins ongoing research into off-road navigation and social robot behaviour. If you use this framework, please cite the relevant works:
+
+**DUnE: A Versatile Dynamic Unstructured Environment for Off-Road Navigation**
+Jack M. Vice and Gita Sukthankar — *Robotics*, vol. 14, no. 4, p. 35, 2025
+DOI: [10.3390/robotics14040035](https://doi.org/10.3390/robotics14040035)
+
+**Active Vision for Social Navigation** — *Preprints*, 2025
+DOI: [10.20944/preprints202501.1487.v1](https://doi.org/10.20944/preprints202501.1487.v1)
+
+## Prerequisites
+
+Before installing RoboTerrain, ensure your system meets the following requirements:
+
+- **Ubuntu 22.04 LTS** — Required by ROS 2 Humble and Gazebo Fortress
+- **ROS 2 Humble** — Full desktop installation (`ros-humble-desktop-full`) recommended
+- **Gazebo Fortress** — Installed via the `ros-humble-ros-gz` meta-package
+- **Python 3.10+** — Ships with Ubuntu 22.04; required by SB3 and Gymnasium
+- **NVIDIA GPU with CUDA** — A CUDA-capable GPU is strongly recommended; PyTorch is configured for `cu118` by default
+- **PyTorch** — Installed via pip with the CUDA 11.8 extra index URL
+
+<Note>
+  RoboTerrain is version-locked to **ROS 2 Humble** and **Gazebo Fortress**. These two versions share a compatible middleware layer through the `ros-humble-ros-gz` bridge packages. Using ROS 2 Iron, Jazzy, or other Gazebo releases (Garden, Harmonic) is not supported and will cause bridge incompatibilities.
+</Note>

@@ -1,0 +1,170 @@
+---
+title: "Running Pretrained SAC Agents for Rover Navigation"
+sidebarTitle: "Inference"
+description: "Deploy pretrained SAC checkpoints for rover navigation inference using predict mode, with deterministic action selection and episode monitoring across all supported worlds."
+---
+
+Predict mode loads a pretrained SAC checkpoint together with its paired `VecNormalize` statistics file and runs the agent deterministically for up to 1,000,000 steps without performing any gradient updates. The `VecNormalize` wrapper switches to evaluation mode automatically (`env.training = False`, `env.norm_reward = False`), so the running statistics are frozen at the values saved during training. Episode rewards and counts are printed to stdout as each episode completes, making it straightforward to benchmark a policy across worlds.
+
+---
+
+## Prerequisites
+
+Before launching the inference script, two things must be true:
+
+<CardGroup cols={2}>
+  <Card title="Gazebo Simulation Running" icon="cube">
+    The correct Gazebo world must be open and the rover model spawned. Launch with:
+
+    ```bash
+    source /opt/ros/humble/setup.bash
+    source ~/src/RoboTerrain/ros2_ws/install/setup.bash
+    ros2 launch roverrobotics_gazebo 4wd_rover_gazebo.launch.py
+    ```
+  </Card>
+  <Card title="Position Bridge Active" icon="arrows-to-circle">
+    The `ign_ros2_pose_topic.py` bridge must be publishing ground-truth pose on `/rover/pose_array`. See the section below for the exact command.
+  </Card>
+</CardGroup>
+
+---
+
+## Running the Position Bridge
+
+The position bridge translates Ignition Gazebo pose data into a ROS 2 `PoseArray` message that the environment subscribes to. Run this in a dedicated terminal **before** starting inference:
+
+```bash
+cd ros2_ws/src/pose_topic
+python ign_ros2_Nav2_topics.py inspect rover_zero4wd
+```
+
+Replace `inspect` with the name of whichever world you have launched in Gazebo (`maze`, `island`, etc.). The second argument `rover_zero4wd` is the model name as registered in the Gazebo entity registry.
+
+---
+
+## Inference Commands
+
+### Inspection World (Pretrained Checkpoint)
+
+The repository ships a pretrained checkpoint for the inspection world under `trained_agents/`. Use it directly:
+
+```bash
+cd ros2_ws/src/sb3/
+
+python sb3_SAC.py \
+  --mode predict \
+  --load True \
+  --world inspect \
+  --vision False \
+  --checkpoint_name trained_agents/sac_inspect.zip \
+  --normalize_stats trained_agents/sac_inspect_normalize.pkl
+```
+
+### Maze World
+
+```bash
+python sb3_SAC.py \
+  --mode predict \
+  --load True \
+  --world maze \
+  --vision False \
+  --checkpoint_name checkpoints/sac_maze_20250126_1430_500000_steps.zip \
+  --normalize_stats checkpoints/sac_maze_20250126_1430_500000_steps_normalize.pkl
+```
+
+### Island / Moon World
+
+```bash
+python sb3_SAC.py \
+  --mode predict \
+  --load True \
+  --world island \
+  --vision False \
+  --checkpoint_name checkpoints/sac_island_20250126_1430_500000_steps.zip \
+  --normalize_stats checkpoints/sac_island_20250126_1430_500000_steps_normalize.pkl
+```
+
+<Note>
+`--vision False` selects the LIDAR+pose `RoverEnvFused` (discrete) path in `sb3_SAC.py`. To run inference with the fused camera observation produced by the Active Vision pipeline, pass `--vision True` and ensure `inference.py` is writing to shared memory first.
+</Note>
+
+---
+
+## Predict Mode Behavior
+
+The predict loop in `sb3_SAC.py` runs for a fixed budget of **1,000,000 steps** and resets automatically at each episode boundary:
+
+```python
+obs = env.reset()
+episode_rewards = 0
+num_episodes = 0
+
+for _ in range(1_000_000):
+    action, _states = model.predict(obs, deterministic=True)
+    obs, rewards, done, info = env.step(action)
+    episode_rewards += rewards[0]
+
+    if done:
+        print(f"Episode {num_episodes} finished with reward {episode_rewards}")
+        obs = env.reset()
+        episode_rewards = 0
+        num_episodes += 1
+```
+
+Key characteristics:
+
+| Property | Value |
+|---|---|
+| Action selection | `deterministic=True` — argmax over the policy mean, no sampling noise |
+| Max steps | 1,000,000 (regardless of episode length) |
+| Episode reset trigger | `done=True` from any environment termination condition |
+| Reward display | Cumulative episode reward printed after each episode |
+| Normalization updates | Disabled (`env.training = False`, `env.norm_reward = False`) |
+
+<Note>
+`env.training = False` and `env.norm_reward = False` are set automatically by `sb3_SAC.py` when `--mode predict` is used together with `--load True`. You do not need to set these flags manually.
+</Note>
+
+---
+
+## Switching Worlds for Inference
+
+Each world requires its own matching checkpoint (the position ranges and terrain dynamics differ significantly between worlds). To switch:
+
+<Steps>
+  <Step title="Close the current Gazebo session">
+    Stop the running simulation (`Ctrl+C` on the launch terminal).
+  </Step>
+  <Step title="Edit the launch file to select the new world">
+    ```bash
+    nano ros2_ws/src/roverrobotics_ros2/roverrobotics_gazebo/launch/4wd_rover_gazebo.launch.py
+    # Uncomment the desired world line in DeclareLaunchArgument() around line 24
+    ```
+  </Step>
+  <Step title="Rebuild and relaunch">
+    ```bash
+    cd ros2_ws/
+    colcon build
+    ros2 launch roverrobotics_gazebo 4wd_rover_gazebo.launch.py
+    ```
+  </Step>
+  <Step title="Restart the position bridge with the new world name">
+    ```bash
+    python ign_ros2_Nav2_topics.py maze rover_zero4wd
+    ```
+  </Step>
+  <Step title="Run inference with the matching checkpoint">
+    ```bash
+    python sb3_SAC.py \
+      --mode predict \
+      --load True \
+      --world maze \
+      --checkpoint_name checkpoints/sac_maze_<timestamp>_steps.zip \
+      --normalize_stats checkpoints/sac_maze_<timestamp>_steps_normalize.pkl
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+Using a checkpoint trained on one world for inference in a different world will generally fail: the position ranges, terrain, and obstacle distributions are incompatible. Always match the `--world` flag to both the Gazebo world and the checkpoint it was trained in.
+</Warning>

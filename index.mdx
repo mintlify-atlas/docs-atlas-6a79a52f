@@ -1,20 +1,59 @@
 ---
-title: "Introduction"
-description: "Welcome to your project"
+title: "RoboTerrain: Off-Road Robot Simulation & RL Framework"
+sidebarTitle: "Home"
+description: "RoboTerrain integrates ROS 2 Humble, Gazebo Fortress, and Stable Baselines3 to provide a complete off-road mobile robot research framework with Gymnasium environments and automated metrics."
 ---
 
-Write a short description of your product here. What it does, who it's for, and what they can accomplish with it.
+RoboTerrain is an open-source framework for developing and evaluating reinforcement learning agents on off-road mobile robots. It bridges ROS 2 Humble, Gazebo Fortress simulation, and PyTorch-backed RL algorithms through a Gymnasium interface — giving you realistic terrain physics, multi-modal sensor observations, and automated navigation metrics out of the box.
 
-<Tip>
-  Ready to make this your own? Start by editing this page. Update your `docs.json` file to customize your site. Then fill out the [Quickstart](/quickstart) page.
-</Tip>
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Launch the simulation and run your first SAC agent in minutes
+  </Card>
+  <Card title="RL Environments" icon="brain" href="/rl/environments">
+    Gymnasium environments with LIDAR, IMU, pose, and fused vision observations
+  </Card>
+  <Card title="Simulation Worlds" icon="globe" href="/simulation/worlds">
+    Inspection, maze, island, rubicon, and construction Gazebo worlds
+  </Card>
+  <Card title="Metrics & Analysis" icon="chart-line" href="/metrics/logging">
+    Automated ROS 2 metrics logging and CLI visualization tools
+  </Card>
+</CardGroup>
 
-<Card title="Quickstart" icon="rocket" href="/quickstart">
-  This card links to the quickstart page in your project.
-</Card>
-<Card title="Components" icon="puzzle-piece" href="https://mintlify.com/docs/components">
-  Add cards, callouts, steps, tabs, and more to design and structure your pages.
-</Card>
-<Card title="Settings" icon="gear" href="https://mintlify.com/docs/organize/settings">
-  Set your site name, branding, and navigation in the `docs.json` file.
-</Card>
+## What's Inside
+
+RoboTerrain is structured around three core concerns: high-fidelity simulation, flexible RL training, and rigorous evaluation.
+
+<CardGroup cols={3}>
+  <Card title="Robot Models" icon="robot" href="/simulation/robots">
+    Rover Zero 4WD, Leo Rover, and Clearpath Husky with SDF descriptions
+  </Card>
+  <Card title="Training Scripts" icon="play" href="/rl/training">
+    SAC and PPO agents via Stable Baselines3 with checkpoint callbacks
+  </Card>
+  <Card title="Active Vision" icon="eye" href="/rl/active-vision">
+    DreamerV3 agent with joint locomotion and discrete gaze control
+  </Card>
+  <Card title="Dynamic Obstacles" icon="person-walking" href="/simulation/dynamic-obstacles">
+    Spawn pedestrian actors with configurable SDF trajectory files
+  </Card>
+  <Card title="Docker Setup" icon="docker" href="/docker-setup">
+    Containerized environment with ROS 2 Humble and CUDA support
+  </Card>
+  <Card title="Reference API" icon="code" href="/reference/rover-env">
+    Full environment class API with constructor params and method signatures
+  </Card>
+</CardGroup>
+
+## Research Context
+
+RoboTerrain powers the **DUnE** benchmark (Dynamic Unstructured Environments) published in *Robotics* (2025) and the **Active Vision for Social Navigation** framework. The codebase supports:
+
+- Point navigation tasks across rough outdoor terrain
+- Social navigation with pedestrian avoidance using attention-based perception
+- Comparative evaluation of SAC, PPO, Nav2 (LiDAR forward/reverse), and Active Vision agents
+
+<Note>
+  RoboTerrain requires **ROS 2 Humble**, **Gazebo Fortress**, and a **CUDA-capable GPU** for vision-based training. See the [Quickstart](/quickstart) for full prerequisites.
+</Note>

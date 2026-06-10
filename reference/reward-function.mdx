@@ -1,0 +1,371 @@
+---
+title: "Reward Function Design and Tuning Reference"
+sidebarTitle: "Reward Function"
+description: "Complete reference for RoboTerrain's reward function including distance, heading, velocity, collision, stuck, and out-of-bounds components with tunable constants."
+---
+
+The reward function is the primary mechanism by which the rover learns to navigate efficiently to goals while avoiding collisions and pathological behaviors like spinning in place or getting stuck. Every component is computed inside `task_reward()` in `ros2_ws/src/sb3/environments/rover_env.py`, which is called once per environment step after the rover publishes a velocity command. The function balances five competing objectives: goal-seeking, obstacle avoidance, forward progress, turning efficiency, and episode termination detection.
+
+---
+
+## Reward Components
+
+### Goal Reward
+
+When the rover reaches within `success_distance` (0.5 m) of the current target, the episode does **not** terminate — instead the target is immediately moved to a new random position and the agent receives a large positive reward. This encourages the agent to chain multiple goals within a single episode.
+
+| Condition | Value |
+|---|---|
+| `current_distance < 0.5 m` | **+100.0** |
+
+```python
+if current_distance < success_distance:   # success_distance = 0.5
+    self.update_target_pos()
+    return self.goal_reward               # goal_reward = 100
+```
+
+### Distance Reward
+
+Progress toward the goal is rewarded only when two conditions are both satisfied: the rover has moved a meaningful distance (`|distance_delta| > 0.001 m`) **and** the heading alignment is positive (`heading_reward > 0.002`, i.e., facing within ~90° of the target). This prevents the agent from earning distance reward by backing away from a target while facing it.
+
+| Condition | Formula |
+|---|---|
+| Good heading + meaningful movement | `distance_delta × distance_delta_scale × final_reward_multiplier` |
+| Otherwise (idle or bad heading) | **−0.03** (idle penalty) |
+
+```python
+distance_delta = self.previous_distance - current_distance  # positive = got closer
+
+if abs(distance_delta) > 0.001 and heading_reward > 0.002:
+    distance_reward = distance_delta * distance_delta_scale   # × 0.3
+else:
+    distance_reward = -0.03                                   # idle penalty
+
+# Applied with final_reward_multiplier = 1.5
+reward = (distance_reward * final_reward_multiplier) + ...
+```
+
+The effective gain per metre of progress toward the goal is `0.3 × 1.5 = 0.45`.
+
+### Velocity Bonus
+
+A small bonus proportional to the rover's actual measured linear velocity (from odometry) is added to encourage the agent to maintain forward momentum rather than creeping:
+
+```python
+velocity_bonus = self.current_linear_velocity * 0.0025
+```
+
+At maximum speed (~1.0 m/s), this contributes `+0.0025` per step — small enough not to dominate but sufficient to break ties in favor of faster movement.
+
+### Turn Penalty
+
+Unnecessary rotation is penalized proportionally to the measured angular velocity. This discourages spinning in place and rewards efficient straight-line driving:
+
+```python
+turning_penalty_coeff = 0.0015
+turn_penalty = -turning_penalty_coeff * abs(self.current_angular_velocity)
+```
+
+At the PID controller's maximum output of 7.0 rad/s, this penalty reaches `−0.0105` per step.
+
+### Collision Penalty
+
+On each step, the minimum finite LIDAR reading is checked. If anything is closer than `collision_threshold` (0.3 m), a flat penalty is returned immediately — no other reward components are computed for that step.
+
+| Condition | Value |
+|---|---|
+| `min(lidar_data) < 0.3 m` | **−0.5** |
+
+```python
+min_distance = np.min(self.lidar_data[np.isfinite(self.lidar_data)])
+if min_distance < collision_threshold:   # collision_threshold = 0.3
+    return collision_penalty             # -0.5
+```
+
+The `collision_count` counter also increments each time this fires. If `collision_count` exceeds 600 steps the episode terminates with `general_penalty` (see [Episode Termination Conditions](#episode-termination-conditions)).
+
+### Idle Penalty
+
+When the rover is either not moving meaningfully (`|distance_delta| ≤ 0.001 m`) or has a poor heading alignment (`heading_reward ≤ 0.002`), the distance reward is replaced by an idle penalty of **−0.03**. This creates constant pressure to make progress, discouraging the agent from hovering near an obstacle or oscillating.
+
+### Stuck Penalty
+
+A sliding window of the last `stuck_window` (600) step positions is maintained. If the total displacement over that window is less than `stuck_threshold` (0.001 m), the episode terminates with a severe penalty:
+
+| Condition | Value |
+|---|---|
+| `distance_moved < 0.001 m` over 600 steps | **−25.0** → episode ends |
+
+```python
+if len(self.position_history) >= self.stuck_window:   # 600 steps
+    start_pos = self.position_history[0]
+    end_pos   = self.position_history[-1]
+    distance_moved = math.sqrt((end_pos[0] - start_pos[0])**2 +
+                               (end_pos[1] - start_pos[1])**2)
+    if distance_moved < self.stuck_threshold:          # 0.001 m
+        return self.get_observation(), self.stuck_penilty, True, False, {}
+        # stuck_penilty = -25.0
+```
+
+### General Penalty
+
+A general terminal penalty of **−20.0** is applied for two severe failure modes:
+
+1. **Robot flipped**: roll or pitch exceeds 85° (`1.48` rad) and the flip occurred after step 500 (early flips from spawn are penalized 0 to avoid discouraging exploration).
+2. **Stuck in collision**: `collision_count` exceeds `stuck_window` (600) — the rover has been in continuous collision proximity for over 600 consecutive steps.
+
+| Condition | Value |
+|---|---|
+| Flipped (>85°, step > 500) | **−20.0** → episode ends |
+| Stuck in collision (> 600 steps) | **−20.0** → episode ends |
+
+### Out-of-Bounds Penalty
+
+Each world defines a rectangular boundary. If the rover's position exceeds those bounds, the episode terminates with:
+
+| Condition | Value |
+|---|---|
+| Position outside world boundary | **−10.0** → episode ends |
+
+World boundaries are set per environment at construction time:
+
+| World | X bounds | Y bounds |
+|---|---|---|
+| `inspect` | [−29, −13] | [−29, −17] |
+| `moon` (island) | [−20, 10] | [−20, 20] |
+| `maze` (default) | [−30, 30] | [−30, 30] |
+
+---
+
+## Reward Function Source
+
+The complete `task_reward()` method as implemented in `rover_env.py`:
+
+```python
+def task_reward(self):
+    """
+    Reward function that accounts for robot dynamics and gradual acceleration
+    """
+    # Constants
+    final_reward_multiplier = 1.5
+    collision_threshold = 0.3
+    collision_penalty = -0.5
+    success_distance = 0.5
+    distance_delta_scale = 0.3
+    heading_tolerance = math.pi / 4  # 45 degrees
+
+    # Get current state info
+    distance_heading_info = self.get_target_info()
+    current_distance = distance_heading_info[0]
+    heading_diff = distance_heading_info[1]
+
+    # Initialize previous distance if needed
+    if self.previous_distance is None:
+        self.previous_distance = current_distance
+        return 0.0
+
+    # Check for goal achievement
+    if current_distance < success_distance:
+        self.update_target_pos()
+        return self.goal_reward
+
+    # Check for collisions
+    min_distance = np.min(self.lidar_data[np.isfinite(self.lidar_data)])
+    if min_distance < collision_threshold:
+        print('Collision!')
+        return collision_penalty
+
+    # Calculate distance change (positive means got closer)
+    distance_delta = self.previous_distance - current_distance
+
+    # Heading component
+    heading_diff = math.atan2(math.sin(heading_diff), math.cos(heading_diff))
+    abs_heading_diff = abs(heading_diff)
+
+    if abs_heading_diff <= math.pi / 2:
+        # From 0 to 90 degrees: scale from 1.0 to 0.0
+        heading_alignment = 1.0 - (2 * abs_heading_diff / math.pi)
+    else:
+        # From 90 to 180 degrees: scale from 0.0 to -1.0
+        heading_alignment = -2 * (abs_heading_diff - math.pi / 2) / math.pi
+
+    heading_reward = 0.01 * heading_alignment
+
+    # Distance component
+    if abs(distance_delta) > 0.001 and heading_reward > 0.002:
+        distance_reward = distance_delta * distance_delta_scale
+    else:
+        distance_reward = -0.03   # idle penalty
+
+    # Turn penalty
+    turning_penalty_coeff = 0.0015
+    turn_penalty = -turning_penalty_coeff * abs(self.current_angular_velocity)
+
+    # Combine rewards
+    reward = (
+        (distance_reward * final_reward_multiplier)
+        + (self.current_linear_velocity * 0.0025)
+        + turn_penalty
+    )
+
+    self.previous_distance = current_distance
+    return reward
+```
+
+---
+
+## Heading Alignment
+
+The `heading_alignment` scalar converts the angular error between the rover's current heading and the direction to the goal into a value in `[−1, 1]`. It uses a piecewise linear function with a break point at 90°:
+
+```
+heading_alignment
+    1.0  ┤╲
+         │ ╲
+    0.5  ┤  ╲
+         │   ╲
+    0.0  ┤────╲────────────── angle
+         0°   90°   180°
+   -0.5  ┤         ╲
+         │          ╲
+   -1.0  ┤           ╲
+```
+
+| Heading error range | `heading_alignment` formula | Result range |
+|---|---|---|
+| 0° – 90° | `1.0 − (2 × |θ| / π)` | **1.0 → 0.0** |
+| 90° – 180° | `−2 × (|θ| − π/2) / π` | **0.0 → −1.0** |
+
+A `heading_reward` threshold of `0.002` is used as the gate for distance reward eligibility. Back-calculating: `0.01 × heading_alignment > 0.002` → `heading_alignment > 0.2` → the rover must be within **~72°** of the target bearing to earn forward progress reward.
+
+<Note>
+  Heading alignment is computed **after** normalizing `heading_diff` into `[−π, π]` using `math.atan2(sin, cos)`. This prevents wrap-around discontinuities from affecting the reward signal.
+</Note>
+
+---
+
+## Tunable Constants
+
+| Constant | Default Value | Effect on Training |
+|---|---|---|
+| `collision_threshold` | `0.3 m` | Distance at which a collision penalty fires. Increase for a larger safety margin; decrease to allow the rover to operate closer to obstacles. |
+| `collision_penalty` | `−0.5` | Per-step cost of a near-collision. Increasing magnitude makes the agent more collision-averse but can slow progress in tight spaces. |
+| `success_distance` | `0.5 m` | Goal tolerance radius. Larger values make goals easier to claim; smaller values require more precise navigation. |
+| `distance_delta_scale` | `0.3` | Scales distance-progress reward before applying `final_reward_multiplier`. Higher values increase the reward gradient toward the goal. |
+| `final_reward_multiplier` | `1.5` | Global multiplier applied to `distance_reward`. Scales overall reward magnitude without changing relative component weights. |
+| `goal_reward` | `100` | Reward for reaching the goal. Should remain substantially larger than the maximum possible accumulated reward over a short episode to keep goal-seeking as the dominant objective. |
+| `stuck_penalty` | `−25.0` | Terminal penalty for being stuck. Larger magnitude strongly discourages stationary behavior but can cause instability early in training. |
+| `stuck_threshold` | `0.001 m` | Minimum displacement over `stuck_window` steps before a stuck penalty fires. |
+| `stuck_window` | `600 steps` | Look-back window for stuck detection. Shorter windows detect stuck faster but may false-positive during deliberate slow traversal. |
+| `turning_penalty_coeff` | `0.0015` | Coefficient on angular velocity penalty. Tune upward to strongly discourage spinning; tune downward if the rover needs to make sharp turns frequently. |
+
+<ParamField path="velocity_bonus_coeff" type="float" default="0.0025">
+  Not exposed as a named constant in source but hardcoded as `current_linear_velocity × 0.0025`. Increase to encourage faster forward movement; decrease if the rover tends to over-speed into obstacles.
+</ParamField>
+
+<ParamField path="idle_penalty" type="float" default="-0.03">
+  Applied per step when neither meaningful movement nor good heading alignment is detected. Acts as a constant pressure to make progress.
+</ParamField>
+
+<ParamField path="general_penalty" type="float" default="-20.0">
+  Terminal penalty for flip or extended collision events. Set at `self.general_penility = -20` in `__init__`.
+</ParamField>
+
+<ParamField path="too_far_away_penalty" type="float" default="-10.0">
+  Out-of-bounds terminal penalty. Set at `self.too_far_away_penilty = -10` in `__init__`.
+</ParamField>
+
+---
+
+## PID Controller
+
+The rover's heading is controlled by a PID controller (`heading_controller()`) that converts the desired absolute heading into an angular velocity command, clamped to `max_angular_velocity`. The action space outputs a **relative** heading offset, which is added to the current yaw before being fed into the PID.
+
+```python
+# PID gains (set in __init__)
+self.Kp = 2.0   # Proportional — main correction term
+self.Ki = 0.0   # Integral — disabled (avoids wind-up on terrain)
+self.Kd = 0.1   # Derivative — damping to reduce overshoot
+self.max_angular_velocity = 7.0  # rad/s — output clamp
+
+def heading_controller(self, desired_heading, current_heading):
+    now = time.time()
+    dt = now - self.last_time
+    self.last_time = now
+
+    # Shortest-path angular error in [-π, π]
+    error = math.atan2(
+        math.sin(desired_heading - current_heading),
+        math.cos(desired_heading - current_heading)
+    )
+
+    self.integral_error += error * dt
+    derivative_error = (error - self.last_error) / dt
+    self.last_error = error
+
+    control = (
+        self.Kp * error
+        + self.Ki * self.integral_error
+        + self.Kd * derivative_error
+    )
+
+    return np.clip(control, -self.max_angular_velocity, self.max_angular_velocity)
+```
+
+| Parameter | Value | Notes |
+|---|---|---|
+| `Kp` | `2.0` | High proportional gain for responsive heading correction. |
+| `Ki` | `0.0` | Integral disabled — avoids integrator wind-up on uneven terrain where persistent heading error is expected. |
+| `Kd` | `0.1` | Light derivative damping reduces overshoot during sharp turns. |
+| `max_angular_velocity` | `7.0 rad/s` | Hard clamp on PID output sent to `cmd_vel`. |
+
+<Warning>
+  The integral term `Ki = 0.0` means steady-state heading error is **not** corrected automatically. If your terrain consistently biases the rover off-course, consider enabling a small Ki (e.g., `0.01`) along with an integrator wind-up guard.
+</Warning>
+
+---
+
+## Episode Termination Conditions
+
+An episode ends (returning `terminated=True`) under any of the following conditions, checked in priority order within `step()`:
+
+1. **Max steps reached** — `_step >= length` (default: 2000 steps). Returns `done=True` with the final computed reward; not a failure condition.
+
+2. **Stuck in collision** — `collision_count > stuck_window` (> 600 steps in near-collision proximity). Returns `general_penalty` (−20.0).
+
+3. **Robot flipped** — `|roll| > 1.48 rad` (~85°) or `|pitch| > 1.48 rad`. Returns `general_penalty` (−20.0) if the flip occurred after step 500; returns reward `0` for early-episode flips to avoid penalising random spawn orientations.
+
+4. **Robot stuck** — total displacement over the last 600 steps is less than 0.001 m. Returns `stuck_penilty` (−25.0).
+
+5. **Out of bounds** — rover position exceeds world boundary box. Returns `too_far_away_penilty` (−10.0).
+
+```python
+# Priority order in step():
+
+# 1. Stuck in collision
+if self.collision_count > self.stuck_window:     # > 600
+    return obs, self.general_penility, True, False, {}   # -20.0
+
+# 2. Flip detection
+flip_status = self.is_robot_flipped()            # |roll| or |pitch| > 1.48 rad
+if flip_status:
+    if self._step > 500:
+        return obs, self.general_penility, True, False, {}  # -20.0
+    else:
+        return obs, 0, True, False, {}
+
+# 3. Stuck detection (sliding window over stuck_window=600 steps)
+if distance_moved < self.stuck_threshold:        # < 0.001 m
+    return obs, self.stuck_penilty, True, False, {}      # -25.0
+
+# 4. Out of bounds
+if self.too_far_away():
+    return obs, self.too_far_away_penilty, True, False, {}  # -10.0
+
+# 5. Max steps (inside task_reward, done flag set after reward computation)
+done = (self._step >= self._length)             # default length = 2000
+```
+
+<Tip>
+  When starting a new training run, use `ent_coef="auto_0.5"` in your SAC or PPO configuration to let the algorithm self-tune its entropy coefficient. Monitor the entropy in TensorBoard: if it collapses below `0.5` early in training the agent is likely over-committing to suboptimal behaviors (e.g., always rotating). If entropy stays high beyond 500k steps, consider increasing the `turning_penalty_coeff` or `idle_penalty` to push the agent toward more decisive goal-seeking.
+</Tip>

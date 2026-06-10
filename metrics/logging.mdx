@@ -1,0 +1,148 @@
+---
+title: "Real-Time Navigation Metrics Logging with ROS 2"
+sidebarTitle: "Logging"
+description: "The MetricsNode ROS 2 node collects collision, velocity, IMU, obstacle clearance, and terrain data in real time and writes timestamped CSV files for offline analysis."
+---
+
+The `MetricsNode` is a ROS 2 node in the `rover_metrics` package that continuously monitors your rover's performance during simulation. It subscribes to four sensor topics — LIDAR, IMU, pose, and odometry — and aggregates collision counts, velocity readings, terrain roughness, and obstacle clearance into a single timestamped CSV file that persists after each run. Every metric is computed from raw sensor data using configurable thresholds, so you can adapt the node to different robot platforms and terrain profiles without touching the core logging logic.
+
+## Starting the Metrics Node
+
+<Steps>
+  <Step title="Source your ROS 2 workspace">
+    Make sure both the base ROS 2 distribution and the RoboTerrain workspace are sourced before running the node.
+
+    ```bash
+    source /opt/ros/humble/setup.bash
+    source /home/jack/src/RoboTerrain/ros2_ws/install/setup.bash
+    ```
+  </Step>
+
+  <Step title="Launch the simulation">
+    The metrics node must be started while the simulation is already running so that sensor topics are being published.
+
+    ```bash
+    ros2 launch roverrobotics_gazebo 4wd_rover_gazebo.launch.py
+    ```
+  </Step>
+
+  <Step title="Run the metrics node">
+    In a separate terminal (with the workspace sourced), start the node:
+
+    ```bash
+    ros2 run rover_metrics metrics_node
+    ```
+
+    On startup you will see the log directory printed to the console:
+
+    ```
+    logging to: /home/jack/src/RoboTerrain/metrics_analyzer/data/metric_logs/
+    ```
+
+    The directory is created automatically if it does not exist. A new CSV file is written for every session, named with the current timestamp (e.g., `metrics_log_20250116_120457.csv`).
+  </Step>
+</Steps>
+
+<Note>
+  The metrics node must be started **while the simulation is already running**. If you launch it before Gazebo is up, the subscribers will connect successfully but will not receive any data until the simulator begins publishing on the expected topics.
+</Note>
+
+---
+
+## Subscribed Topics
+
+`MetricsNode` creates four subscriptions inside `setup_subscribers()`. Each topic feeds a different subset of the collected metrics.
+
+| Topic | Message Type | QoS | Purpose |
+|---|---|---|---|
+| `/scan` | `sensor_msgs/LaserScan` | Reliable, depth 10 | Collision detection, obstacle clearance |
+| `/imu/data` | `sensor_msgs/Imu` | Reliable, depth 10 | Smoothness metric, rough terrain detection, vertical roughness |
+| `/rover/pose_array` | `geometry_msgs/PoseArray` | BEST\_EFFORT, depth 1 | Position tracking, cumulative distance traveled |
+| `/odometry/wheels` | `nav_msgs/Odometry` | Reliable, depth 10 | Current velocity, velocity over rough terrain |
+
+<Info>
+  The `/rover/pose_array` subscription uses a `BEST_EFFORT` QoS profile with a queue depth of 1. This is intentional — pose updates are high-frequency and only the most recent position is needed for distance calculation. Using `RELIABLE` QoS here could cause queue build-up when the simulation runs faster than real time.
+</Info>
+
+---
+
+## Collected Metrics
+
+All metrics are initialized in `MetricsNode.__init__()` inside the `self.metrics` dictionary and written to CSV once per second by the `periodic_logging` timer callback.
+
+| Metric Name | Flag | Description | Source Topic |
+|---|---|---|---|
+| Total Collisions | TC | Cumulative count of detected collisions. Incremented whenever the minimum LIDAR range drops below the `collision_threshold` of **0.2 m** (20 cm). | `/scan` |
+| Current Collision Status | CS | Binary flag (`1`/`0`). Set to `1` in a logging cycle when the rolling average of clearance readings is below the 0.2 m collision threshold. | `/scan` |
+| Smoothness Metric | SM | Cumulative sum of combined linear acceleration magnitude and angular velocity magnitude from each IMU sample. Higher values indicate rougher motion over the session. Rough movement is flagged when instantaneous smoothness exceeds `smoothness_threshold` of **10.0**. | `/imu/data` |
+| Obstacle Clearance | OC | Rolling average of minimum LIDAR ranges (meters) across the last 100 readings. Values below `min_safe_clearance` of **0.5 m** (50 cm) are flagged as low-clearance situations. | `/scan` |
+| Distance Traveled | DT | Cumulative Euclidean distance (meters) computed from consecutive `/rover/pose_array` poses. Updates exceeding `distance_threshold` of **0.5 m** per cycle are discarded as sensor noise. | `/rover/pose_array` |
+| Current Velocity / Velocity Over Rough Terrain | CV / VORT | Rolling average of wheel odometry speed (m/s) across the last 100 readings. When the latest IMU reading indicates rough terrain, the current velocity is also stored as the Velocity Over Rough Terrain (VORT) value. | `/odometry/wheels`, `/imu/data` |
+| IMU Acceleration Magnitude | IM | Magnitude of the 3-axis linear acceleration vector (`√(ax² + ay² + az²)`) from the most recent IMU sample, in m/s². Values above `rough_terrain_threshold` of **15.0 m/s²** trigger the rough terrain flag. | `/imu/data` |
+| Is Rough Terrain | RT | Binary flag (`1`/`0`). Set to `1` when the latest IMU acceleration magnitude exceeds 15.0 m/s². | `/imu/data` |
+| Vertical Roughness | VR | Absolute value of the IMU vertical (Z-axis) acceleration (`\|az\|`), logged continuously. Provides a more granular roughness signal than the binary `RT` flag. | `/imu/data` |
+
+---
+
+## CSV Output Format
+
+Each session produces a single CSV file with the following columns, written in the order below:
+
+```
+Timestamp, Total Collisions, Current Collision Status, Smoothness Metric,
+Current Smoothness, Obstacle Clearance, Distance Traveled, Current Velocity,
+IMU Acceleration Magnitude, Is Rough Terrain, Vertical Roughness, Notes
+```
+
+**Filename convention:** `metrics_log_YYYYMMDD_HHMMSS.csv`
+
+**Example path:**
+```
+/home/jack/src/RoboTerrain/metrics_analyzer/data/metric_logs/metrics_log_20250116_120457.csv
+```
+
+**Logging frequency:** One row is appended per second by the `periodic_logging` callback, which is driven by a ROS 2 timer created with a period of `1.0` seconds:
+
+```python
+self.create_timer(1.0, self.periodic_logging)  # Log every second
+```
+
+Each logged row computes aggregate values over the sensor buffers (last 100 readings) collected since the previous logging cycle:
+
+- **`Current Smoothness`** — mean of `(accel_magnitude + angular_magnitude)` across all buffered IMU readings
+- **`Obstacle Clearance`** — mean of the last 100 LIDAR minimum-range readings
+- **`Current Velocity`** — mean of the last 100 wheel odometry speed readings
+- **`Notes`** — set to `"Normal operation"` (note fields are available for custom annotations)
+
+The `Timestamp` column contains the ROS 2 clock value in seconds (`current_time.to_msg().sec`), making it straightforward to align logs with simulation events or bag recordings.
+
+---
+
+## ROS 2 Parameters
+
+`MetricsNode` declares two ROS 2 parameters that can be set at launch time or via `ros2 param set`.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `debug_mode` | `bool` | `False` | When `True`, emits additional log messages for LIDAR clearance/collision counts and position updates at the interval defined by `debug_interval`. |
+| `debug_interval` | `int` | `100` | Controls how frequently debug messages are printed. A value of `100` means one debug message is printed for every 100 update cycles. |
+
+**Setting parameters at launch:**
+
+```bash
+ros2 run rover_metrics metrics_node \
+    --ros-args \
+    -p debug_mode:=true \
+    -p debug_interval:=50
+```
+
+**Setting parameters at runtime:**
+
+```bash
+ros2 param set /metrics_node debug_mode true
+ros2 param set /metrics_node debug_interval 50
+```
+
+<Tip>
+  Enable `debug_mode` during initial setup or when tuning threshold values. With `debug_mode:=true` and `debug_interval:=50`, you will see LIDAR clearance readings, collision counts, and cumulative distance updates printed to the terminal roughly every 50 sensor callbacks — useful for confirming that all four topics are publishing and that the thresholds are appropriate for your terrain.
+</Tip>

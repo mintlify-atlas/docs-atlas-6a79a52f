@@ -1,0 +1,296 @@
+---
+title: "Nav2 Navigation Parameters for Leo Rover"
+sidebarTitle: "Nav2 Params"
+description: "Reference for Nav2 navigation stack parameters used in RoboTerrain for Leo Rover LIDAR and depth camera navigation, including planner, controller, and costmap settings."
+---
+
+RoboTerrain integrates the ROS 2 Nav2 navigation stack to provide a classical planning baseline for comparison against reinforcement learning policies trained with Stable-Baselines3. Two fully-configured sensor variants are provided — one built around the Leo Rover's 360° GPU LIDAR and another built around a depth camera point cloud — allowing head-to-head evaluation of Nav2 against RL agents across the same DUnE benchmark worlds. A third general-purpose parameter file is included for physical rover deployments with a pre-built map.
+
+<Note>
+  Nav2 is used as a **comparison baseline** in the DUnE benchmark. Running these configurations alongside trained RL agents lets you directly compare classical motion planning with learned navigation policies under identical terrain and obstacle conditions.
+</Note>
+
+---
+
+## Configuration Files
+
+Three Nav2 parameter files ship with RoboTerrain, each targeting a different sensor configuration or deployment context.
+
+| File | Sensor | Use Case |
+|---|---|---|
+| `leo_nav2_lidar_params.yaml` | 360° GPU LIDAR (`/scan`) | Simulation baseline — LIDAR-based obstacle avoidance |
+| `leo_nav2_depth_params.yaml` | Depth camera (`/depth_camera/points`) | Simulation baseline — depth camera obstacle avoidance |
+| `nav2_params.yaml` | LIDAR + MPPI controller | Physical rover with pre-built map and filtered odometry |
+
+All three files live under:
+
+```
+ros2_ws/src/roverrobotics_ros2/roverrobotics_gazebo/config/   # simulation configs
+ros2_ws/src/roverrobotics_ros2/roverrobotics_driver/config/   # physical rover config
+```
+
+---
+
+## Key Nav2 Parameters
+
+### BT Navigator (`bt_navigator`)
+
+The Behavior Tree navigator drives top-level mission execution. Both simulation configs use the `odom` frame as the global frame — no pre-built map or AMCL localization is required.
+
+```yaml
+# leo_nav2_lidar_params.yaml
+bt_navigator:
+  ros__parameters:
+    use_sim_time: true
+    global_frame: odom               # No map/AMCL — odom is the reference frame
+    robot_base_frame: base_footprint
+    odom_topic: /odom_ground_truth   # Ground-truth odometry from Gazebo
+    bt_loop_duration: 10             # ms per BT tick
+    default_server_timeout: 20
+    wait_for_service_timeout: 1000
+    default_nav_to_pose_bt_xml: /opt/ros/humble/share/nav2_bt_navigator/behavior_trees/navigate_to_pose_w_replanning_and_recovery.xml
+```
+
+The physical rover config (`nav2_params.yaml`) switches to the `map` frame with filtered odometry:
+
+```yaml
+# nav2_params.yaml
+bt_navigator:
+  ros__parameters:
+    use_sim_time: False
+    global_frame: map
+    robot_base_frame: base_link
+    odom_topic: /odometry/filtered
+```
+
+### Controller Server (`controller_server`)
+
+The LIDAR config uses **DWB (Dynamic Window Approach)** with tuned velocity limits for the Leo Rover. The physical rover config replaces DWB with **MPPI (Model Predictive Path Integral)** for smoother trajectory tracking.
+
+#### LIDAR Config — DWB Local Planner
+
+```yaml
+# leo_nav2_lidar_params.yaml
+controller_server:
+  ros__parameters:
+    use_sim_time: true
+    controller_frequency: 15.0
+    min_x_velocity_threshold: 0.001
+    min_y_velocity_threshold: 0.5
+    min_theta_velocity_threshold: 0.001
+    failure_tolerance: 0.3
+
+    FollowPath:
+      plugin: "dwb_core::DWBLocalPlanner"
+      min_vel_x: -0.7        # Allows reverse
+      max_vel_x: 0.7         # m/s forward limit
+      max_vel_theta: 1.5     # rad/s rotation limit
+      max_speed_xy: 0.7
+      acc_lim_x: 1.0
+      acc_lim_theta: 2.5
+      decel_lim_x: -1.0
+      decel_lim_theta: -2.5
+      vx_samples: 20
+      vtheta_samples: 20
+      sim_time: 1.7          # Trajectory rollout horizon (seconds)
+      linear_granularity: 0.05
+      angular_granularity: 0.025
+      xy_goal_tolerance: 0.25
+      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign",
+                "PathAlign", "PathDist", "GoalDist"]
+      BaseObstacle.scale: 0.15
+      PathAlign.scale: 32.0
+      GoalAlign.scale: 24.0
+      PathDist.scale: 32.0
+      GoalDist.scale: 24.0
+      RotateToGoal.scale: 32.0
+      RotateToGoal.slowing_factor: 5.0
+```
+
+#### Physical Rover Config — MPPI Controller
+
+```yaml
+# nav2_params.yaml
+controller_server:
+  ros__parameters:
+    controller_frequency: 30.0
+
+    FollowPath:
+      plugin: "nav2_mppi_controller::MPPIController"
+      time_steps: 56
+      model_dt: 0.05
+      batch_size: 2000
+      vx_max: 0.5
+      vx_min: -0.35
+      wz_max: 1.9
+      temperature: 0.3
+      gamma: 0.015
+      motion_model: "DiffDrive"
+      critics: ["ConstraintCritic", "ObstaclesCritic", "GoalCritic",
+                "GoalAngleCritic", "PathAlignCritic", "PathFollowCritic",
+                "PathAngleCritic", "PreferForwardCritic"]
+      ObstaclesCritic:
+        repulsion_weight: 1.5
+        critical_weight: 20.0
+        collision_cost: 10000.0
+        collision_margin_distance: 0.1
+        inflation_radius: 0.55
+        cost_scaling_factor: 10.0
+```
+
+### Planner Server (`planner_server`)
+
+```yaml
+# leo_nav2_lidar_params.yaml — SmacPlanner2D (MOORE motion model)
+planner_server:
+  ros__parameters:
+    use_sim_time: true
+    expected_planner_frequency: 20.0
+    planner_plugins: ["GridBased"]
+    GridBased:
+      plugin: "nav2_smac_planner/SmacPlanner2D"
+      tolerance: 0.5
+      allow_unknown: true
+      max_iterations: 1000000
+      motion_model_for_search: "MOORE"
+      cost_travel_multiplier: 2.0
+
+# leo_nav2_depth_params.yaml / nav2_params.yaml — NavfnPlanner (Dijkstra/A*)
+planner_server:
+  ros__parameters:
+    planner_plugins: ["GridBased"]
+    GridBased:
+      plugin: "nav2_navfn_planner/NavfnPlanner"
+      tolerance: 0.5
+      use_astar: false
+      allow_unknown: true
+```
+
+### Costmap Parameters
+
+Both local and global costmaps use a rolling window (no static map). Key sizing and robot radius values:
+
+```yaml
+# leo_nav2_lidar_params.yaml — local costmap
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      rolling_window: true
+      width: 6               # metres
+      height: 6              # metres
+      resolution: 0.05       # 5 cm per cell
+      robot_radius: 0.4      # Leo Rover approximate footprint radius (m)
+      plugins: ["obstacle_layer", "inflation_layer"]
+      inflation_layer:
+        cost_scaling_factor: 5.0
+        inflation_radius: 0.4   # metres around obstacles
+
+# leo_nav2_lidar_params.yaml — global costmap
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      rolling_window: true
+      width: 20
+      height: 20
+      resolution: 0.05
+      robot_radius: 0.3
+      inflation_layer:
+        cost_scaling_factor: 3.0
+        inflation_radius: 0.5
+```
+
+The physical rover config uses an explicit footprint polygon instead of a circular radius:
+
+```yaml
+# nav2_params.yaml
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      width: 8
+      height: 8
+      footprint: "[[0.27305, 0.1778],[0.27305, -0.1778],[-0.27305, -0.1778],[-0.27305, 0.1778]]"
+      footprint_padding: 0.01
+      plugins: ["voxel_layer", "inflation_layer"]
+      inflation_layer:
+        cost_scaling_factor: 3.0
+        inflation_radius: 0.35
+```
+
+### Velocity Smoother
+
+```yaml
+# leo_nav2_lidar_params.yaml
+velocity_smoother:
+  ros__parameters:
+    smoothing_frequency: 20.0
+    feedback: "OPEN_LOOP"
+    max_velocity: [0.7, 0.0, 0.7]    # [vx, vy, vtheta]
+    min_velocity: [-0.7, 0.0, -0.7]
+    max_accel:    [1.0, 0.0, 2.5]
+    max_decel:    [-1.0, 0.0, -2.5]
+    odom_topic: "odom_ground_truth"
+```
+
+---
+
+## LIDAR vs Depth Camera Config
+
+The two simulation parameter files differ primarily in their **observation source**, **planner algorithm**, and **costmap update rates**. The table below summarises the key differences:
+
+| Parameter | `leo_nav2_lidar_params.yaml` | `leo_nav2_depth_params.yaml` |
+|---|---|---|
+| **Sensor topic** | `/scan` (LaserScan) | `/depth_camera/points` (PointCloud2) |
+| **Sensor frame** | `lidar_link` | `camera_link` |
+| **Obstacle max range** | 8.0 m (costmap), 10.0 m (raytrace) | 5.0 m |
+| **Obstacle min range** | 0.15 m | 0.2 m |
+| **Min/max obstacle height** | Up to 15.0 m (2D scan, no z filter) | 0.1 m – 2.0 m (3D filter) |
+| **Controller frequency** | 15.0 Hz | 20.0 Hz |
+| **Local costmap update** | 5.0 Hz | 10.0 Hz |
+| **Planner plugin** | `SmacPlanner2D` (MOORE grid) | `NavfnPlanner` (Dijkstra) |
+| **Expected planner frequency** | 20.0 Hz | 5.0 Hz |
+| **Local inflation radius** | 0.4 m | 0.55 m |
+| **Global inflation radius** | 0.5 m | 0.55 m |
+| **Inflation cost scaling** | Local 5.0 / Global 3.0 | 2.0 (both) |
+| **Odom topic** | `/odom_ground_truth` | `/odom` |
+| **Recovery behaviors** | spin, backup, drive_on_heading, wait | spin, backup, wait |
+
+<Warning>
+  The depth camera config does **not** include a `velocity_smoother` or `waypoint_follower` node in its lifecycle manager. Ensure your launch file accounts for this if you are mixing components from the two configs.
+</Warning>
+
+The LIDAR config's `BaseObstacle` critic is weighted significantly higher (`0.15` vs `0.02` in the depth config), making it more conservative around detected obstacles. The depth config compensates with a tighter `inflation_radius` and height-filtered point clouds to avoid penalising distant ground returns.
+
+---
+
+## Using Nav2 as a Baseline
+
+Launch the LIDAR-based Nav2 stack for comparison against an RL policy:
+
+```bash
+# LIDAR-based Nav2 navigation
+ros2 launch roverrobotics_gazebo leo_nav2_lidar_launch.py
+
+# Depth camera-based Nav2 navigation
+ros2 launch roverrobotics_gazebo leo_nav2_depth.launch.py
+```
+
+Send a navigation goal programmatically (matches the RL agent's goal format):
+
+```bash
+ros2 topic pub /goal_pose geometry_msgs/PoseStamped \
+  "{header: {frame_id: 'odom'}, pose: {position: {x: 5.0, y: 3.0, z: 0.0}, \
+  orientation: {w: 1.0}}}" --once
+```
+
+Or use the RViz 2D Nav Goal tool with the `odom` frame selected as the fixed frame.
+
+To record metrics for DUnE benchmark comparison, echo the `/navigate_to_pose/_action/status` topic and log success/failure alongside the RL episode logs:
+
+```bash
+ros2 topic echo /navigate_to_pose/_action/feedback \
+  | grep -E "distance_remaining|navigation_time"
+```
+
+<Note>
+  Both Nav2 configs run with `use_sim_time: true` and pull ground-truth odometry from Gazebo (`/odom_ground_truth`). This ensures a fair comparison against RL agents that also receive ground-truth pose during training. For real-world evaluation, switch `use_sim_time` to `false` and point `odom_topic` at your filtered odometry source.
+</Note>

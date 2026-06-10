@@ -1,0 +1,220 @@
+---
+title: "RoverEnvFused Discrete: Discrete-Action Environment API"
+sidebarTitle: "Discrete Env"
+description: "API reference for the discrete-action RoverEnvFused variant in discrete_rover_env_fused.py, with a multi-discrete action space for rover navigation."
+---
+
+The discrete-action variant of `RoverEnvFused` lives in `ros2_ws/src/sb3/environments/discrete_rover_env_fused.py`. It exposes the same 3-channel fused visual observation and shared-memory interface as `RoverEnvFused`, but replaces the continuous `Box` action space with a flat `Discrete` space of **60 actions** — the Cartesian product of 5 speed levels and 12 compass headings. This design is intended for algorithms such as DQN, Rainbow, and other value-based methods that require a finite set of actions, and can simplify exploration in early training by constraining the agent to a small, semantically meaningful action vocabulary.
+
+---
+
+## Constructor
+
+```python
+RoverEnvFused(   # discrete variant
+    size=(96, 96),
+    length=6000,
+    scan_topic='/scan',
+    imu_topic='/imu/data',
+    cmd_vel_topic='/cmd_vel',
+    world_n='inspect',
+    connection_check_timeout=30,
+    lidar_points=32,
+    max_lidar_range=12.0,
+    rl_obs_name='rl_observation',
+)
+```
+
+The constructor signature and all parameters are **identical** to the continuous `RoverEnvFused`. The only difference introduced in `__init__` is the action-space definition and the action-decoding tables; see the [Action Space](#action-space) section below.
+
+<ParamField path="size" type="tuple" default="(96, 96)">
+  Fused observation image dimensions `(height, width)` in pixels. Must match the dimensions produced by the Active Vision pipeline.
+</ParamField>
+
+<ParamField path="length" type="int" default="6000">
+  Maximum episode steps. Episodes terminate when `_step >= length`, returning `done=True`.
+</ParamField>
+
+<ParamField path="scan_topic" type="str" default="'/scan'">
+  ROS2 topic for `sensor_msgs/LaserScan`. Retained for internal reward computation.
+</ParamField>
+
+<ParamField path="imu_topic" type="str" default="'/imu/data'">
+  ROS2 topic for `sensor_msgs/Imu`. The subscriber is disabled; orientation is extracted from the `/rover/pose_array` quaternion instead.
+</ParamField>
+
+<ParamField path="cmd_vel_topic" type="str" default="'/cmd_vel'">
+  ROS2 topic for publishing `geometry_msgs/Twist` velocity commands.
+</ParamField>
+
+<ParamField path="world_n" type="str" default="'inspect'">
+  Simulated world name: `'inspect'`, `'moon'`, or `'maze'`. The string `'island'` is internally remapped to `'moon'`.
+</ParamField>
+
+<ParamField path="connection_check_timeout" type="int" default="30">
+  Seconds to wait for initial sensor data (currently unused in this environment variant).
+</ParamField>
+
+<ParamField path="lidar_points" type="int" default="32">
+  Downsampled LIDAR resolution used for internal collision monitoring.
+</ParamField>
+
+<ParamField path="max_lidar_range" type="float" default="12.0">
+  Maximum LIDAR range in metres used when clipping raw scan values.
+</ParamField>
+
+<ParamField path="rl_obs_name" type="str" default="'rl_observation'">
+  Name of the POSIX shared memory segment written by the Active Vision inference pipeline. Must exist before the environment is instantiated.
+</ParamField>
+
+---
+
+## Action Space
+
+The discrete variant defines a flat `Discrete` space whose size is the product of `n_speeds × n_directions`:
+
+```python
+# Speed levels (m/s)
+self.n_speeds = 5
+self.speed_levels = np.array([-0.2, 0.0, 0.3, 0.6, 1.0], dtype=np.float32)
+
+# Direction angles (radians) — 12 evenly-spaced headings covering [-π, π)
+self.n_directions = 12
+self.direction_angles = np.linspace(-np.pi, np.pi, 12, endpoint=False)
+
+# Combined flat action space: 5 × 12 = 60 discrete actions
+self.action_space = spaces.Discrete(self.n_speeds * self.n_directions)  # Discrete(60)
+```
+
+### Speed Levels
+
+| Index | Speed (m/s) | Description |
+|-------|-------------|-------------|
+| 0 | −0.2 | Slow reverse |
+| 1 | 0.0 | Stop |
+| 2 | 0.3 | Slow forward |
+| 3 | 0.6 | Medium forward |
+| 4 | 1.0 | Fast forward |
+
+### Direction Headings
+
+Twelve angles are evenly distributed from **−π** to **π** (exclusive), spaced 30° apart:
+
+| Index | Angle (rad) | Approx. direction |
+|-------|-------------|-------------------|
+| 0 | −π (≈−3.14) | West |
+| 1 | −2.62 | WSW |
+| 2 | −2.09 | SSW |
+| 3 | −1.57 | South |
+| 4 | −1.05 | SSE |
+| 5 | −0.52 | ESE |
+| 6 | 0.00 | East |
+| 7 | 0.52 | ENE |
+| 8 | 1.05 | NNE |
+| 9 | 1.57 | North |
+| 10 | 2.09 | NNW |
+| 11 | 2.62 | WNW |
+
+### Decoding an Action Integer
+
+Inside `step()`, an integer action is decoded into a `(speed_idx, direction_idx)` pair:
+
+```python
+action     = int(action)
+speed_idx  = action // self.n_directions   # integer division by 12
+direction_idx = action % self.n_directions # remainder
+
+speed           = float(self.speed_levels[speed_idx])
+desired_heading = float(self.direction_angles[direction_idx])
+```
+
+The decoded `desired_heading` is an **absolute** heading in radians (not a relative offset as in the continuous variant). It is tracked by the same PID heading controller used in `RoverEnvFused`, clipped to ±7.0 rad/s angular velocity output.
+
+### Example: Action Integer → Command
+
+```python
+# Action 27 → speed_idx=2, direction_idx=3
+action = 27
+speed_idx     = 27 // 12  # = 2  → 0.3 m/s (slow forward)
+direction_idx = 27 % 12   # = 3  → -1.57 rad (South)
+```
+
+---
+
+## Observation Space
+
+The observation space is identical to the continuous `RoverEnvFused`:
+
+```python
+spaces.Dict({
+    'fused_image': spaces.Box(
+        low=0.0,
+        high=1.0,
+        shape=(96, 96, 3),
+        dtype=np.float32
+    ),
+    'pose': spaces.Box(
+        low=np.array([-30.0, -30.0, -10.0]),
+        high=np.array([ 30.0,  30.0,  10.0]),
+        dtype=np.float32
+    ),
+    'imu': spaces.Box(
+        low=np.array([-np.pi, -np.pi, -np.pi]),
+        high=np.array([ np.pi,  np.pi,  np.pi]),
+        dtype=np.float32
+    ),
+    'target': spaces.Box(
+        low=np.array([0,    -np.pi]),
+        high=np.array([100,  np.pi]),
+        shape=(2,),
+        dtype=np.float32
+    ),
+    'velocities': spaces.Box(
+        low=np.array([-10.0, -10.0]),
+        high=np.array([ 10.0,  10.0]),
+        shape=(2,),
+        dtype=np.float32
+    ),
+})
+```
+
+| Key | Shape | Description |
+|-----|-------|-------------|
+| `fused_image` | `(96, 96, 3)` | 3-channel fused image from shared memory: `[grayscale, YOLO-heatmap, depth]` |
+| `pose` | `(3,)` | Ground-truth rover position `[x, y, z]` in metres |
+| `imu` | `(3,)` | Orientation `[pitch, roll, yaw]` in radians |
+| `target` | `(2,)` | `[distance_m, relative_angle_rad]` to the navigation goal |
+| `velocities` | `(2,)` | `[linear_velocity, angular_velocity]` from wheel odometry |
+
+---
+
+## Differences from Continuous RoverEnvFused
+
+- **Action space type** — `Discrete(60)` instead of `Box([-0.6, -π], [1.0, π])`. All downstream algorithms must handle integer actions rather than float arrays.
+- **Action decoding** — The continuous variant interprets `action[1]` as a *relative* heading offset added to the current yaw. The discrete variant maps the direction index to an **absolute** heading from the pre-defined 12-point compass table.
+- **Reverse capability** — The continuous environment allows reverse down to −0.6 m/s; the discrete environment provides a single discrete reverse speed of −0.2 m/s.
+- **Granularity** — The continuous action space has infinite resolution; the discrete space has 5 speed levels and 12 direction bins (30° resolution). Fine-grained manoeuvring between compass points is not directly representable.
+- **Action logging** — The discrete `step()` prints the raw action integer, its type, and dtype at every step for debugging (`print(f"Action type: ...")`) — a line not present in the continuous variant.
+- **Reward function** — Both variants share the same `task_reward(observation)` implementation; the fused-image heatmap penalty (`heatmap_center × 0.1`) applies in both.
+
+---
+
+## When to Use
+
+**Choose the discrete environment when:**
+
+- You are using a value-based algorithm such as **DQN**, **Rainbow**, **C51**, or any method that requires a finite action set.
+- You want to **constrain exploration** during early training by restricting the agent to a pre-defined action vocabulary rather than searching a 2D continuous space.
+- You are performing **behavioural cloning** from human demonstrations where speed/direction pairs map naturally to button presses or a joystick quantised to compass directions.
+- Your compute budget is tight and you want to benefit from **action-space discretisation** to reduce policy-gradient variance.
+
+**Choose the continuous environment (`leo_rover_env_fused.py`) when:**
+
+- You are using an actor-critic method such as **PPO**, **SAC**, or **TD3** that operates natively on continuous actions.
+- You need **sub-30° directional precision** for tight navigation corridors.
+- You want the rover to modulate speed smoothly across the full `[-0.6, 1.0]` range, for example when approaching a goal at low speed.
+- You are training with **DreamerV3** or a world-model approach that benefits from a dense, smooth action manifold.
+
+<Note>
+  Both variants share the same observation space, reward function, shared-memory interface, and world-specific parameters. Switching between them requires only changing the imported class and the RL algorithm's action-space handling.
+</Note>

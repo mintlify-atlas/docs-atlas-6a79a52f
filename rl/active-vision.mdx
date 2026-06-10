@@ -1,0 +1,332 @@
+---
+title: "Active Vision for Social Robot Navigation with DreamerV3"
+sidebarTitle: "Active Vision"
+description: "The AVSN pipeline combines DreamerV3, spatiotemporal attention, and fisheye camera perception for joint locomotion and gaze control in socially-aware off-road navigation."
+---
+
+Active Vision for Social Navigation (AVSN) is a joint reinforcement learning framework that teaches a rover **where to look and where to drive** within a single end-to-end policy. Instead of training separate perception and control modules, AVSN uses a DreamerV3 latent world model to solve the credit-assignment problem inherent in active sensing: the agent must discover that choosing a particular camera gaze direction now will produce observations that make future navigation decisions easier. The policy outputs three values simultaneously — linear velocity, angular velocity, and a discrete pan-window index — so locomotion and gaze are co-optimised from the start.
+
+**Paper:** [Active Vision for Social Navigation (Vice & Sukthankar, 2025)](https://www.preprints.org/manuscript/202604.0068)
+
+---
+
+## System Architecture
+
+The pipeline connects five components across three repositories. Data flows from the fisheye camera through perception and into the RL agent, with the gaze action feeding back to select the next camera window.
+
+```
+Fisheye Camera (6 rectified 320×320 windows, ~160° FOV)
+        │
+        ▼
+fisheye_ros2_mem_share.py  ──►  shared memory  (raw rectified frames)
+        │
+        ▼
+inference.py
+  ├─ YOLO pedestrian detection
+  ├─ Spatiotemporal attention heatmap   (trajectory_model.py)
+  ├─ Monocular depth estimation
+  └─ Fused 3-channel observation (96×96) ──►  shared memory
+        │
+        ▼
+DreamerV3  (dreamerv3/main.py, config: leorover)
+  ├─ World model learns gaze–observation dynamics
+  ├─ Joint action: [linear_vel, angular_vel, pan_window]
+  └─ pan_window selects from 5 yaw offsets:
+        -60°  |  -30°  |  0°  |  +30°  |  +60°
+```
+
+### Gaze Action Space
+
+The `pan_window` output is a **discrete** index mapped to one of five yaw offsets relative to the rover's heading:
+
+| Index | Yaw Offset | Description |
+|---|---|---|
+| 0 | −60° | Hard left |
+| 1 | −30° | Soft left |
+| 2 | 0° | Forward (centre) |
+| 3 | +30° | Soft right |
+| 4 | +60° | Hard right |
+
+The selected window is passed back to `fisheye_ros2_mem_share.py`, which crops the corresponding rectified region for the next observation.
+
+---
+
+## Repository Dependencies
+
+AVSN spans three repositories that must be cloned under the same parent directory (the README assumes `~/src/`):
+
+| Repository | Role |
+|---|---|
+| **RoboTerrain** | Gazebo Fortress simulation, Leo Rover with fisheye camera, dynamic human actor spawner, navigation metrics logging |
+| **attention** | Spatiotemporal attention model (`trajectory_model.py`, Flax/JAX) — predicts near-future pedestrian occupancy heatmaps from RGB + YOLO masks |
+| **dreamerJMV3** | DreamerV3-based RL agent — consumes fused observations (grayscale, depth, attention heatmap) and outputs joint locomotion + gaze actions |
+
+```
+~/src/
+├── RoboTerrain/
+│   └── ros2_ws/src/
+│       ├── roverrobotics_ros2/        # Leo Rover model, fisheye camera, Gazebo worlds
+│       ├── dynamic_obstacles/         # Human actor spawner + trajectory SDF files
+│       └── rover_metrics/             # Navigation metrics logger
+├── attention/
+│   ├── inference/
+│   │   └── fisheye_ros2_mem_share.py  # ROS 2 → shared memory bridge
+│   ├── inference.py                   # YOLO + attention + depth fusion
+│   ├── trajectory_model.py            # Spatiotemporal attention model (Flax/JAX)
+│   ├── run_efficient_training.py      # Attention training entry point
+│   └── model_output/                  # Trained attention checkpoints (.pkl)
+└── dreamerJMV3/
+    ├── dreamerv3/
+    │   ├── main.py                    # DreamerV3 entry point
+    │   └── configs.yaml               # Contains `leorover` config
+    └── logdir/                        # Training logs and checkpoints
+```
+
+---
+
+## Prerequisites
+
+<CardGroup cols={2}>
+  <Card title="Operating System" icon="linux">
+    Ubuntu 22.04 with [ROS 2 Humble](https://docs.ros.org/en/humble/Installation/Ubuntu-Install-Debs.html) and [Gazebo Fortress](https://gazebosim.org/docs/latest/ros_installation/)
+  </Card>
+  <Card title="Hardware" icon="microchip">
+    NVIDIA GPU with CUDA — required for YOLO inference, monocular depth estimation, and JAX-based DreamerV3 training
+  </Card>
+  <Card title="Python" icon="code">
+    Python 3.10+ in two **separate** virtual environments: one for the attention pipeline, one for DreamerV3
+  </Card>
+  <Card title="ROS 2 Workspace" icon="wrench">
+    Built with `colcon build` from `~/src/RoboTerrain/ros2_ws/`. Source both `setup.bash` files in every ROS terminal.
+  </Card>
+</CardGroup>
+
+<Note>
+The attention model and DreamerV3 have **conflicting JAX version requirements** and must run in separate Python environments. Each repository ships a `requirements.txt`. Create and activate the appropriate environment before running each component.
+
+```bash
+# Attention environment
+cd ~/src/attention
+pip install -r requirements.txt
+
+# DreamerV3 environment (separate venv/conda env)
+cd ~/src/dreamerJMV3
+pip install -r requirements.txt
+```
+</Note>
+
+### Build the ROS 2 Workspace
+
+```bash
+source /opt/ros/humble/setup.bash
+cd ~/src/RoboTerrain/ros2_ws
+colcon build
+source install/setup.bash
+```
+
+---
+
+## Running the Full System
+
+The full system requires **five terminals**. Source ROS 2 in every terminal that uses ROS nodes:
+
+```bash
+source /opt/ros/humble/setup.bash
+source ~/src/RoboTerrain/ros2_ws/install/setup.bash
+```
+
+<Steps>
+  <Step title="Terminal 1 — Leo Rover Fisheye Simulation">
+    Launch the Leo Rover with fisheye camera in one of the supported worlds (`inspect`, `construction`, `island`):
+
+    ```bash
+    # With GUI (development / debugging)
+    ros2 launch roverrobotics_gazebo Leo_rover_fisheye.launch.py
+
+    # Headless (recommended for training runs)
+    ros2 launch roverrobotics_gazebo Leo_rover_fisheye.launch.py headless:=true
+    ```
+
+    Wait until Gazebo reports the world is running and the rover model is loaded before proceeding.
+  </Step>
+
+  <Step title="Terminal 2 — Fisheye Camera Bridge">
+    Subscribes to the fisheye camera ROS topic, rectifies six 320×320 windows covering ~160° horizontal FOV, and writes them to a shared memory block:
+
+    ```bash
+    cd ~/src/attention/inference
+    python fisheye_ros2_mem_share.py
+    ```
+
+    Verify the node is receiving frames — it will print window dimensions on startup.
+  </Step>
+
+  <Step title="Terminal 3 — Attention + Perception Pipeline">
+    Activate your **attention Python environment**, then run the fusion pipeline. This process runs YOLO pedestrian detection, the spatiotemporal attention model, and monocular depth estimation, then writes the fused 3-channel observation to shared memory for DreamerV3:
+
+    ```bash
+    # activate attention environment, then:
+    cd ~/src/attention
+    python inference.py --attention_mode ./model_output/checkpoint_epoch_1000.pkl
+    ```
+
+    The `--attention_mode` argument points to the trained attention checkpoint (`.pkl`). The script reads fisheye frames from shared memory and writes fused observations back to a separate shared memory block named `rl_observation`.
+  </Step>
+
+  <Step title="Terminal 4 — DreamerV3 RL Agent">
+    <Warning>
+    DreamerV3 requires the `LD_LIBRARY_PATH` to be filtered to ROS-only paths before launch. Without this filter, Python-environment-installed `libstdc++` and other system libraries clash with ROS 2 shared libraries, causing segmentation faults or silent import failures.
+    </Warning>
+
+    Activate your **DreamerV3 Python environment**, filter the library path, then launch the agent:
+
+    ```bash
+    # activate DreamerV3 environment, then:
+
+    # Filter LD_LIBRARY_PATH to ROS-only paths
+    FILTERED_LD_LIBRARY_PATH=$(echo $LD_LIBRARY_PATH | tr ':' '\n' \
+        | grep -E '^/opt/ros' | tr '\n' ':' | sed 's/:$//')
+
+    env LD_LIBRARY_PATH="$FILTERED_LD_LIBRARY_PATH" \
+        CUDA_HOME="" \
+        XLA_PYTHON_CLIENT_PREALLOCATE=false \
+        XLA_PYTHON_CLIENT_ALLOCATOR=platform \
+        python dreamerv3/main.py \
+          --configs leorover \
+          --logdir ./logdir/dreamer/{timestamp}
+    ```
+
+    The `leorover` config in `dreamerv3/configs.yaml` defines the observation shape (96×96×3), action heads (continuous locomotion + discrete gaze), and world-model hyperparameters.
+  </Step>
+
+  <Step title="Terminal 5 — Dynamic Human Actors">
+    Spawn pedestrian actors with predefined trajectory files. The examples below are for the `inspect` world:
+
+    ```bash
+    cd ~/src/RoboTerrain/ros2_ws/src/dynamic_obstacles
+
+    # Linear trajectory actor
+    python spawn.py \
+      --trajectory_file trajectories/inspect_linear.sdf \
+      --world_name inspect \
+      --actor_name linear
+
+    # Diagonal trajectory actor
+    python spawn.py \
+      --trajectory_file trajectories/inspect_diag.sdf \
+      --world_name inspect \
+      --actor_name diag
+
+    # Triangular-loop trajectory actor
+    python spawn.py \
+      --trajectory_file trajectories/inspect_corner_triangle.sdf \
+      --world_name inspect \
+      --actor_name triangle
+    ```
+
+    Match `--world_name` to the world launched in Terminal 1. Each `spawn.py` call spawns one actor; run as many as needed.
+  </Step>
+</Steps>
+
+---
+
+## Training the Attention Model
+
+The spatiotemporal attention model (`trajectory_model.py`) is trained separately on datasets of RGB fisheye frames with YOLO-generated pedestrian occupancy masks. Produced checkpoints are then consumed by `inference.py` at runtime.
+
+```bash
+# activate attention environment, then:
+cd ~/src/attention
+
+python run_efficient_training.py \
+  --dataset_path /path/to/data \
+  --output_dir ./model_output \
+  --preprocessed_dir ./preprocessed_data \
+  --num_epochs 1000 \
+  --batch_size 8 \
+  --sequence_length 5 \
+  --learning_rate 1e-4 \
+  --target_width 320 \
+  --target_height 320 \
+  --yolo_model_path /path/to/yolo11n.onnx \
+  --embedding_dim 128 \
+  --num_heads 4 \
+  --tensorboard_dir ./log_dir
+```
+
+| Argument | Default | Description |
+|---|---|---|
+| `--dataset_path` | — | Root directory of RGB frame sequences |
+| `--num_epochs` | `1000` | Training epochs |
+| `--batch_size` | `8` | Batch size (sequence batches) |
+| `--sequence_length` | `5` | Temporal sequence length fed to the attention model |
+| `--learning_rate` | `1e-4` | Adam learning rate |
+| `--embedding_dim` | `128` | Transformer embedding dimension |
+| `--num_heads` | `4` | Number of attention heads |
+| `--yolo_model_path` | — | Path to YOLO `.onnx` weights for generating pedestrian masks |
+
+### Resuming Attention Training
+
+```bash
+python run_efficient_training.py \
+  --dataset_path /path/to/data \
+  --resume_checkpoint ./model_output/checkpoint_epoch_500.pkl \
+  # ... other args as above
+```
+
+### Monitoring with TensorBoard
+
+```bash
+tensorboard --logdir ./log_dir
+```
+
+---
+
+## Troubleshooting
+
+<Accordion title="No camera frames in shared memory">
+Confirm Gazebo is running and `fisheye_ros2_mem_share.py` is receiving on the camera topic. Check the ROS topic list:
+
+```bash
+ros2 topic list | grep camera
+ros2 topic hz /camera/image_raw
+```
+
+If no camera topic appears, the Leo Rover fisheye launch may have failed. Re-run Terminal 1 and watch for launch errors.
+</Accordion>
+
+<Accordion title="YOLO ONNX errors in inference.py">
+Ensure `onnxruntime-gpu` is installed in the **attention** Python environment (not the DreamerV3 environment):
+
+```bash
+pip install onnxruntime-gpu
+```
+
+Also verify the YOLO `.onnx` file path passed to `--yolo_model_path` exists and is a valid ONNX model.
+</Accordion>
+
+<Accordion title="DreamerV3 CUDA out-of-memory (OOM)">
+Set `XLA_PYTHON_CLIENT_PREALLOCATE=false` to prevent JAX from pre-allocating the entire GPU memory pool. This flag is already included in the Terminal 4 launch command above. If OOM persists, reduce the world-model batch size in `dreamerv3/configs.yaml` under the `leorover` config.
+</Accordion>
+
+<Accordion title="libstdc++ version conflicts when starting DreamerV3">
+The `LD_LIBRARY_PATH` filter in Terminal 4 resolves most Python-environment vs. ROS 2 system library clashes. If you still see `GLIBCXX` version errors, ensure the filter command ran successfully by printing `$FILTERED_LD_LIBRARY_PATH` before launching:
+
+```bash
+echo $FILTERED_LD_LIBRARY_PATH
+# Should only show paths starting with /opt/ros/
+```
+</Accordion>
+
+<Accordion title="Spawned actors not visible in Gazebo">
+Verify the `--world_name` flag passed to `spawn.py` exactly matches the name of the loaded Gazebo world. The world name is case-sensitive. You can confirm the active world name with:
+
+```bash
+ign service -s /gazebo/worlds --reqtype ignition.msgs.Empty \
+  --reptype ignition.msgs.StringMsg_V --timeout 2000 --req ''
+```
+</Accordion>
+
+<Accordion title="Attention checkpoint fails to load in inference.py">
+Attention checkpoints are Flax `.pkl` files. The model architecture at load time must match the architecture used during training. Ensure the `--embedding_dim` and `--num_heads` values passed to `inference.py` match those used when the checkpoint was produced by `run_efficient_training.py`.
+</Accordion>

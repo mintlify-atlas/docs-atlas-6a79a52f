@@ -1,0 +1,187 @@
+---
+title: "Spawning Dynamic Human Actors in Gazebo"
+sidebarTitle: "Dynamic Obstacles"
+description: "Spawn animated pedestrian actors with predefined SDF trajectory files to simulate dynamic obstacle avoidance scenarios in RoboTerrain Gazebo worlds."
+---
+
+Dynamic human obstacles are animated pedestrian actors that walk predefined looping paths inside a Gazebo Fortress world. They are essential for social navigation research: a robot must learn to anticipate, yield to, and navigate around moving people in cluttered environments rather than only avoiding static geometry. RoboTerrain implements dynamic obstacles using Gazebo's built-in SDF `<actor>` system combined with the `<script>` / `<trajectory>` element. The `spawn.py` script in `ros2_ws/src/dynamic_obstacles/` reads a waypoint SDF file, computes timing and heading for each waypoint at a desired walking speed, mirrors the path for a terrain-following return leg, and injects the fully assembled actor SDF into a running Gazebo world via the `ign service` CLI.
+
+---
+
+## Available Trajectory Files
+
+Pre-built trajectory files live in `ros2_ws/src/dynamic_obstacles/trajectories/`.
+
+### Inspection World Trajectories
+
+| File | Path Pattern | Description |
+|---|---|---|
+| `inspect_linear.sdf` | Straight line across the inspection site | Simple crossing path — good for evaluating head-on avoidance |
+| `inspect_diag.sdf` | Diagonal traverse | Cross-traffic scenario where the actor cuts across the robot's likely heading |
+| `inspect_corner_triangle.sdf` | Triangular path around box corners | Occlusion scenario — actor appears and disappears behind inspection crates |
+
+### Flat-Terrain Trajectories
+
+| File | Description |
+|---|---|
+| `flat_triangle_traject.sdf` | Equilateral triangle loop for open flat areas |
+| `flat_triangle_traject_2nd.sdf` | Second triangle variant with a different phase offset for multi-actor runs |
+| `flat_triangle_traject_3rd.sdf` | Third variant enabling a third simultaneous actor with minimal path overlap |
+
+### Construction World Trajectories
+
+| File | Description |
+|---|---|
+| `construction_lower.sdf` | Ground-level path through the lower section of the CPR construction site |
+| `construction_upper.sdf` | Elevated path through the upper construction level — tests vertical clearance awareness |
+
+---
+
+## Spawning Actors
+
+Actors are spawned **after** the Gazebo simulation is already running. Each call to `spawn.py` injects one actor; run the script multiple times with different arguments for multi-actor scenarios.
+
+<Warning>
+  Actor spawning will fail silently if the Gazebo simulation is not already running. Launch the simulation first (Terminal 1) and confirm Gazebo has fully loaded the world before executing any `spawn.py` commands.
+</Warning>
+
+<Note>
+  The `--world_name` argument must exactly match the internal Gazebo world name — not the filename. For example, `inspection_boxes_v4.world` uses `--world_name inspect`. If the names do not match, the `ign service` call to `/world/<name>/create` will return an error.
+</Note>
+
+### CLI Arguments
+
+`spawn.py` accepts four command-line arguments:
+
+| Argument | Default | Description |
+|---|---|---|
+| `--trajectory_file` | `flat_triangle_traject_rev.sdf` | Path to the trajectory SDF file (relative or absolute) |
+| `--actor_name` | `first` | Unique name for the Gazebo actor entity (e.g. `linear`, `diag`). Also used as the ROS 2 topic prefix: `/<actor_name>_actor/pose`. |
+| `--animate_name` | `actor1` | Unique animation name within the SDF to prevent Gazebo animation conflicts when multiple actors are present |
+| `--world_name` | `moon` | Gazebo internal world name matching the loaded world (e.g. `inspect`, `default`) |
+
+### Example: Inspection World — Three Actors
+
+```bash
+cd ros2_ws/src/dynamic_obstacles
+
+# First actor — straight crossing path
+python spawn.py \
+  --trajectory_file trajectories/inspect_linear.sdf \
+  --world_name inspect \
+  --actor_name linear
+
+# Second actor — diagonal crossing path
+python spawn.py \
+  --trajectory_file trajectories/inspect_diag.sdf \
+  --world_name inspect \
+  --actor_name diag
+
+# Third actor — triangular path around corners
+python spawn.py \
+  --trajectory_file trajectories/inspect_corner_triangle.sdf \
+  --world_name inspect \
+  --actor_name triangle
+```
+
+### Example: Construction World — Two Actors
+
+```bash
+cd ros2_ws/src/dynamic_obstacles
+
+# Lower level actor
+python spawn.py \
+  --trajectory_file trajectories/construction_lower.sdf \
+  --world_name default \
+  --actor_name lower
+
+# Upper level actor
+python spawn.py \
+  --trajectory_file trajectories/construction_upper.sdf \
+  --world_name default \
+  --actor_name upper
+```
+
+### How spawn.py Works
+
+<Accordion title="Spawn pipeline internals">
+  When `spawn.py` is called, it executes the following steps:
+
+  1. **Load** the raw waypoint list from the trajectory SDF file.
+  2. **Downsample** waypoints using the `sample_interval` parameter (default: every waypoint).
+  3. **Compute timing** — cumulative travel time is calculated from Euclidean distances between waypoints at `desired_velocity=1.0 m/s`.
+  4. **Mirror the path** — waypoints are reversed and appended so the actor automatically returns to the start, creating an infinite loop without a teleport.
+  5. **Compute heading** — yaw angle at each waypoint is set to face the next waypoint. A brief `TURN_DURATION = 0.1 s` snap-turn waypoint is inserted at every corner to prevent the actor from sliding sideways.
+  6. **Assemble actor SDF** — wraps the processed trajectory in a full Gazebo actor SDF block, including the `walk.dae` skin mesh from Gazebo Fuel and the `ActorPosePublisher` plugin.
+  7. **Write to `/tmp/actor_with_trajectory.sdf`** and call:
+
+  ```bash
+  ign service \
+    -s /world/<world_name>/create \
+    --reqtype ignition.msgs.EntityFactory \
+    --reptype ignition.msgs.Boolean \
+    --timeout 1000 \
+    --req 'sdf_filename: "/tmp/actor_with_trajectory.sdf"'
+  ```
+</Accordion>
+
+---
+
+## Generating Custom Trajectories
+
+RoboTerrain includes several Python utilities for creating new trajectory SDF files from scratch.
+
+<CardGroup cols={2}>
+  <Card title="generate_trajectory.py" icon="route">
+    General-purpose trajectory generator. Converts a set of `(x, y)` waypoints into a properly formatted SDF `<trajectory>` block for use with `spawn.py`.
+
+    Located at: `ros2_ws/src/dynamic_obstacles/generate_trajectory.py`
+  </Card>
+  <Card title="generate_flat_trajectory.py" icon="arrows-left-right">
+    Specialised for flat-terrain environments. Generates triangle and polygon trajectories on a flat ground plane.
+
+    Located at: `ros2_ws/src/dynamic_obstacles/generate_flat_trajectory.py`
+  </Card>
+</CardGroup>
+
+The `trajectory_dev/` subdirectory contains additional development tools:
+
+| File | Description |
+|---|---|
+| `trajectory_generator.py` | Interactive trajectory generator for authoring custom paths |
+| `ray_trajectory_generator.py` | Generates radial ray-pattern trajectories |
+| `spawn-actor-sequential.py` | Spawns multiple actors in sequence with configurable delays |
+| `spawn-actor-corrected.py` | Corrected spawn logic for complex world geometries |
+
+---
+
+## Actor Position Publisher
+
+Each spawned actor is equipped with the `ActorPosePublisher` Gazebo Fortress system plugin, which publishes the actor's world-frame pose over a dedicated ROS 2 topic at 30 Hz.
+
+**Plugin source:** `actor_publisher/src/actor_pos_publisher.cc`
+
+The plugin is compiled from C++ and loaded at actor spawn time. It configures two parameters per actor:
+
+```xml
+<plugin filename="libActorPosePublisher.so"
+        name="ignition::gazebo::v6::systems::ActorPosePublisher">
+  <actor_name>linear_actor</actor_name>
+  <topic>/linear_actor/pose</topic>
+  <rate_hz>30</rate_hz>
+</plugin>
+```
+
+The topic name follows the pattern `/<actor_name>_actor/pose` and is bridged to ROS 2 `geometry_msgs/msg/Pose` via the `ros_gz_bridge` entries in `Leo_rover_fisheye.launch.py`:
+
+```python
+'/linear_actor/pose@geometry_msgs/msg/Pose[gz.msgs.Pose',
+'/diag_actor/pose@geometry_msgs/msg/Pose[gz.msgs.Pose',
+'/triangle_actor/pose@geometry_msgs/msg/Pose[gz.msgs.Pose',
+```
+
+The RL policy can subscribe to these topics to obtain real-time actor positions for training social navigation behaviour.
+
+<Tip>
+  When adding a new actor that does not have a corresponding bridge entry in the launch file, add the topic line to `gz_ros2_bridge` arguments list in `Leo_rover_fisheye.launch.py` and rebuild the workspace before launching. Pose data will not be available to ROS 2 nodes until the bridge is configured.
+</Tip>

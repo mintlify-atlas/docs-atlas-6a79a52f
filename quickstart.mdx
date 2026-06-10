@@ -1,47 +1,144 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get Started with RoboTerrain in 5 Steps"
+sidebarTitle: "Quickstart"
+description: "Clone RoboTerrain, build the ROS 2 workspace, launch the Gazebo simulation, and run your first SAC navigation agent in under 15 minutes."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
+This guide walks you through everything needed to go from a fresh Ubuntu 22.04 machine to a running RoboTerrain simulation with a pre-trained SAC agent navigating the Inspection world. By the end you will have Gazebo Fortress open with the Rover Zero 4WD spawned, the position bridge node streaming pose data over ROS 2, and the SAC agent driving the robot autonomously — all in under 15 minutes.
 
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
-
-## Prerequisites
-
-Before you begin, you must have:
-
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+<Warning>
+  The Gazebo simulation **must be fully started** (Fortress window open and robot spawned) before you launch any RL agent script. Starting `sb3_SAC.py` before Gazebo is ready will cause the ROS 2 environment to hang waiting for sensor topics that have not yet been advertised.
+</Warning>
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+  <Step title="Clone the Repository">
+    Clone RoboTerrain from GitHub using SSH, then navigate into the ROS 2 workspace directory:
 
     ```bash
-    npm install your-package
+    git clone git@github.com:jackvice/RoboTerrain.git
+    cd RoboTerrain
+    ```
+
+    The repository contains the full ROS 2 workspace under `ros2_ws/`, the SB3 agent code under `ros2_ws/src/sb3/`, Gazebo world files, robot URDF/SDF models, the metrics node, and a pre-trained checkpoint pair (`sac_inspect.zip` / `sac_inspect_normalize.pkl`) for the Inspection world.
+  </Step>
+
+  <Step title="Build the ROS 2 Workspace">
+    Source the ROS 2 Humble underlay, then build all packages in the workspace with `colcon`:
+
+    ```bash
+    source /opt/ros/humble/setup.bash
+
+    cd RoboTerrain/ros2_ws/
+    colcon build
+    ```
+
+    Building for the first time compiles the `roverrobotics_ros2` packages (robot description, Gazebo launch, control), `rover_metrics`, and `dynamic_obstacles`. Expect the build to take 2–5 minutes depending on your CPU.
+  </Step>
+
+  <Step title="Install Python Dependencies">
+    From the repository root, install the required Python packages. The core runtime dependencies are Stable Baselines3 (with extras for TensorBoard and image support) and `transforms3d` for quaternion math:
+
+    ```bash
+    pip install stable-baselines3[extra] transforms3d
+    ```
+
+    If you intend to experiment with model-based agents, `jax` is listed in `requirements.txt` as an optional dependency for DreamerV3-style approaches:
+
+    ```bash
+    # Optional — only needed for JAX-based agent experiments
+    pip install jax
+    ```
+
+    PyTorch with CUDA support should be installed separately following the [official instructions](https://pytorch.org/get-started/locally/) for your CUDA version. The Dockerfile uses CUDA 11.8:
+
+    ```bash
+    pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu118
     ```
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+
+  <Step title="Launch the Simulation">
+    Open a new terminal, source both the ROS 2 underlay and the built workspace overlay, then launch the Rover Zero simulation:
 
     ```bash
-    your-cli init
+    source /opt/ros/humble/setup.bash
+    source /home/RoboTerrain/ros2_ws/install/setup.bash
+
+    ros2 launch roverrobotics_gazebo 4wd_rover_gazebo.launch.py
     ```
-  </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+
+    Gazebo Fortress will open and spawn the Rover Zero 4WD (`camera_rover_4wd.sdf`) at the origin of the default world (`island.sdf`). To use the Inspection world instead, edit the `default_value` in `4wd_rover_gazebo.launch.py` (line 24) and rebuild:
 
     ```bash
-    your-cli start
+    # Change the default world to the inspection environment
+    nano RoboTerrain/ros2_ws/src/roverrobotics_ros2/roverrobotics_gazebo/launch/4wd_rover_gazebo.launch.py
+    # Set: default_value='inspection_simple.world'
+
+    cd RoboTerrain/ros2_ws/
+    colcon build
+
+    ros2 launch roverrobotics_gazebo 4wd_rover_gazebo.launch.py
+    ```
+
+    Wait until you see the Rover Zero model appear in the Gazebo viewport before proceeding to the next step.
+  </Step>
+
+  <Step title="Run the SAC Agent">
+    Open a second terminal and navigate to the SB3 agent directory. The agent requires two processes: a **position bridge node** that translates Ignition pose messages into a ROS 2 topic the environment can read, and the **SAC inference script** itself.
+
+    <Note>
+      `ign_ros2_pose_topic.py` **must be started first** and left running in the background. It subscribes to the Gazebo dynamic pose stream and republishes the robot's world-frame position as a `/rover/pose_array` topic. `sb3_SAC.py` reads from this topic to compute goal-relative observations — if the bridge is not running, the environment will block indefinitely on the first `reset()` call.
+    </Note>
+
+    ```bash
+    cd RoboTerrain/ros2_ws/src/sb3/
+
+    # Step 1 — Start the position bridge for the Inspection world (leave this running)
+    python ign_ros2_pose_topic.py inspect rover_zero4wd
+    ```
+
+    Open a **third terminal**, then start the pre-trained SAC agent in predict mode:
+
+    ```bash
+    cd RoboTerrain/ros2_ws/src/sb3/
+
+    # Step 2 — Run the pre-trained SAC agent in inference mode
+    python sb3_SAC.py --mode predict \
+                      --load True \
+                      --world inspect \
+                      --vision False \
+                      --checkpoint_name trained_agents/sac_inspect.zip \
+                      --normalize_stats trained_agents/sac_inspect_normalize.pkl
+    ```
+
+    You should see the agent begin navigating the Inspection world. Episode results (reward, steps) are printed to the terminal as each episode completes. To train a new agent from scratch instead of running the pre-trained one, use:
+
+    ```bash
+    python sb3_SAC.py --mode train --load False --world inspect
+    ```
+
+    Training progress is written to TensorBoard logs. Launch TensorBoard in a separate terminal to monitor reward curves live:
+
+    ```bash
+    tensorboard --logdir tboard_logs/
     ```
   </Step>
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+## What's Next
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
-</Tip>
+Now that you have a working simulation and a running agent, explore the rest of the RoboTerrain documentation to go deeper:
+
+<CardGroup cols={2}>
+  <Card title="Training RL Agents" icon="graduation-cap" href="/rl/training">
+    Configure SAC and PPO hyperparameters, set up checkpoint callbacks, and run multi-million-step training campaigns with normalization statistics persistence.
+  </Card>
+  <Card title="Gymnasium Environments" icon="dumbbell" href="/rl/environments">
+    Explore the LiDAR-fused and vision-fused Gymnasium environment implementations, observation and action spaces, and reward shaping strategies.
+  </Card>
+  <Card title="Simulation Worlds" icon="globe" href="/simulation/worlds">
+    Switch between Inspection, Maze, Island, Rubicon, and Construction worlds. Learn how to modify terrain, add obstacles, and create your own Gazebo SDF world.
+  </Card>
+  <Card title="Metrics & Logging" icon="chart-bar" href="/metrics/logging">
+    Use the `rover_metrics` ROS 2 node to capture SR, TC, MTT, TR, and VORT, then generate publication-ready comparison plots across multiple experimental trials.
+  </Card>
+</CardGroup>

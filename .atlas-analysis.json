@@ -1,0 +1,101 @@
+{
+  "projectType": "ai-ml",
+  "projectName": "RoboTerrain",
+  "projectDescription": "An off-road mobile robot simulation and reinforcement learning framework integrating ROS 2 Humble, Gazebo Fortress, and Stable Baselines3/DreamerV3 with a Gymnasium interface for training and evaluating navigation agents on unstructured terrain.",
+  "theme": "aspen",
+  "primaryColor": "#24344c",
+  "lightColor": "#8c94a4",
+  "darkColor": "#cfd3d9",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Guide",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "docker-setup"
+            ]
+          },
+          {
+            "group": "Simulation",
+            "pages": [
+              "simulation/worlds",
+              "simulation/robots",
+              "simulation/dynamic-obstacles"
+            ]
+          },
+          {
+            "group": "Reinforcement Learning",
+            "pages": [
+              "rl/environments",
+              "rl/training",
+              "rl/inference",
+              "rl/active-vision"
+            ]
+          },
+          {
+            "group": "Metrics",
+            "pages": [
+              "metrics/logging",
+              "metrics/analysis"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "Environment API",
+            "pages": [
+              "reference/rover-env",
+              "reference/rover-env-fused",
+              "reference/discrete-env"
+            ]
+          },
+          {
+            "group": "ROS 2 Nodes & Topics",
+            "pages": [
+              "reference/ros-topics",
+              "reference/metrics-node",
+              "reference/launch-files"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "reference/nav2-params",
+              "reference/reward-function"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Gymnasium-compatible environments for rover navigation with LIDAR, IMU, pose, and fused vision observations",
+    "SAC (Soft Actor-Critic) and PPO reinforcement learning agents via Stable Baselines3",
+    "DreamerV3-based active vision agent with joint locomotion and discrete gaze control",
+    "Multiple Gazebo Fortress worlds: inspection, maze, island/moon, rubicon, construction",
+    "Leo Rover, Rover Zero 4WD, and Clearpath Husky robot models with SDF descriptions",
+    "Dynamic human actor spawner with configurable trajectory files",
+    "ROS 2 metrics logger publishing TC, OC, CV, IMU, DT, SM, RT, VR to CSV",
+    "Metrics Analyzer CLI for multi-trial comparison and publication-ready plots",
+    "Dockerized environment with ROS 2 Humble, Gazebo Fortress, and PyTorch/CUDA"
+  ],
+  "publicApiSurface": [
+    "RoverEnv(world_n, length, lidar_points, max_lidar_range) — Gymnasium env, LIDAR+pose+IMU observations",
+    "RoverEnvFused(world_n, size, length) — Gymnasium env with fused 3-channel vision observations",
+    "RoverEnvFused (discrete_rover_env_fused) — Discrete-action variant of the fused environment",
+    "sb3_SAC.py --mode [train|predict] --world [inspect|maze|island|rubicon] --load [True|False]",
+    "ros2 launch roverrobotics_gazebo 4wd_rover_gazebo.launch.py [world:=<world_file>]",
+    "ros2 launch roverrobotics_gazebo Leo_rover_fisheye.launch.py [headless:=true]",
+    "ros2 run rover_metrics metrics_node",
+    "python cli_main.py <csv_files> [-m TC OC CV IM RT DT SM VR] [-p time_series]",
+    "python spawn.py --trajectory_file <sdf> --world_name <name> --actor_name <name>",
+    "MetricsNode subscribes: /scan, /imu/data, /rover/pose_array, /odometry/wheels"
+  ]
+}

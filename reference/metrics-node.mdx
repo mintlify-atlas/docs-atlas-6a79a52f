@@ -1,0 +1,167 @@
+---
+title: "MetricsNode ROS 2 Package Reference"
+sidebarTitle: "Metrics Node"
+description: "Reference documentation for the MetricsNode ROS 2 node including subscribed topics, ROS parameters, metric computation logic, and CSV output format."
+---
+
+`MetricsNode` is the performance-monitoring node for the RoboTerrain framework. It lives in the `rover_metrics` ROS 2 package at `rover_metrics/rover_metrics/metrics_node.py` and runs as an independent node alongside the simulation. The node subscribes to four sensor and state topics — LIDAR, IMU, ground-truth pose, and wheel odometry — and continuously computes a set of traversal-quality metrics including collision counts, movement smoothness, obstacle clearance, and total distance travelled. All metrics are appended to a timestamped CSV file once per second, producing a structured log that the `metrics_analyzer` tool can consume for post-hoc evaluation and reward shaping research.
+
+---
+
+## Running the Node
+
+Build the workspace and source it before running:
+
+```bash
+cd ~/src/RoboTerrain/ros2_ws
+colcon build --packages-select rover_metrics
+source install/setup.bash
+ros2 run rover_metrics metrics_node
+```
+
+To enable verbose per-update debug output, set the `debug_mode` parameter at launch:
+
+```bash
+ros2 run rover_metrics metrics_node --ros-args -p debug_mode:=true -p debug_interval:=50
+```
+
+<Note>
+  MetricsNode requires a running simulation with the `ros_gz_bridge` active so that `/scan`, `/imu/data`, and `/odometry/wheels` are being published. The `/rover/pose_array` topic requires `PoseConverterNode` (`ign_ros2_Nav2_topics.py`) to be running as well.
+</Note>
+
+---
+
+## Subscribed Topics
+
+MetricsNode establishes four subscriptions in its `setup_subscribers()` method. Each subscription has a dedicated callback that updates the internal metrics state.
+
+| Topic | Message Type | QoS Reliability | History | Depth | Callback |
+|---|---|---|---|---|---|
+| `/scan` | `sensor_msgs/msg/LaserScan` | Reliable (default) | Keep Last | 10 | `lidar_callback` |
+| `/imu/data` | `sensor_msgs/msg/Imu` | Reliable (default) | Keep Last | 10 | `imu_callback` |
+| `/rover/pose_array` | `geometry_msgs/msg/PoseArray` | **BEST_EFFORT** | Keep Last | 1 | `pose_array_callback` |
+| `/odometry/wheels` | `nav_msgs/msg/Odometry` | Reliable (default) | Keep Last | 10 | `odometry_callback` |
+
+### `/scan` — LIDAR Callback
+
+The `lidar_callback` converts the `ranges` array to NumPy, filters out `inf` and `NaN` values, and extracts the minimum finite range as the current obstacle clearance. If this minimum falls below `collision_threshold` (0.2 m), the `total_collisions` counter is incremented. The clearance reading is also appended to the `clearance_readings` rolling buffer.
+
+### `/imu/data` — IMU Callback
+
+The `imu_callback` computes two quantities from each IMU message:
+
+- **Acceleration magnitude** — `sqrt(ax² + ay² + az²)` — added to the cumulative `smoothness_metric` alongside the angular velocity magnitude.
+- **Vertical roughness** — `|az|` — stored as the instantaneous `vertical_roughness` metric. This captures bump-induced vertical accelerations independently of horizontal motion.
+
+Each reading is pushed onto the `imu_readings` buffer as a dictionary with keys `accel_magnitude`, `vertical_roughness`, `angular_magnitude`, and `is_rough`.
+
+### `/rover/pose_array` — Pose Callback
+
+The `pose_array_callback` extracts `poses[0]` from each `PoseArray` message and computes the 3-D Euclidean distance from the previous position. To guard against teleportation artefacts or large timestamp gaps, the distance is only accumulated if it is less than `distance_threshold` (0.5 m per update). The ground-truth pose is sourced from `PoseConverterNode`, which parses the Gazebo dynamic-pose stream.
+
+### `/odometry/wheels` — Odometry Callback
+
+The `odometry_callback` computes the linear velocity magnitude from `twist.twist.linear` and appends it to the `velocity_readings` buffer. When the most recent IMU reading reports rough terrain (`is_rough = True`), the current velocity is recorded as `velocity_over_rough` for later analysis.
+
+---
+
+## ROS 2 Parameters
+
+Both parameters are declared in `__init__` via `declare_parameter()` and are read once at startup.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `debug_mode` | `bool` | `False` | When `True`, the node emits `INFO`-level log messages from LIDAR and pose callbacks at intervals governed by `debug_interval` |
+| `debug_interval` | `int` | `100` | Number of callback updates between debug log emissions. At 10 Hz, `100` produces one log line per 10 seconds |
+
+---
+
+## Metric Thresholds
+
+The following constants are stored in `self.metrics` at initialisation and govern the binary classification of sensor readings. They are **not** exposed as ROS 2 parameters and must be changed in source code if tuning is required.
+
+| Metric Key | Value | Unit | Meaning |
+|---|---|---|---|
+| `collision_threshold` | `0.2` | metres | Minimum obstacle clearance below which a collision event is registered |
+| `smoothness_threshold` | `10.0` | — | Threshold for classifying movement as "rough" in logged notes (sum of acceleration and angular velocity magnitudes) |
+| `min_safe_clearance` | `0.5` | metres | Minimum clearance considered operationally safe; used to annotate low-clearance events in CSV notes |
+| `distance_threshold` | `0.5` | metres | Maximum plausible per-update displacement; updates exceeding this value are discarded as outliers |
+| `rough_terrain_threshold` | `15.0` | m/s² | IMU linear acceleration magnitude above which terrain is classified as rough (`is_rough = True`) |
+
+<Warning>
+  `collision_threshold` (0.2 m) is a conservative value suitable for the Leo Rover body radius. If you switch to the larger `rover_zero4wd` model you may need to increase this threshold to avoid false negatives.
+</Warning>
+
+---
+
+## Buffer Configuration
+
+MetricsNode maintains three rolling buffers inside `self.buffer` to smooth noisy sensor readings before logging:
+
+| Buffer Key | Type | Max Size | Contents |
+|---|---|---|---|
+| `imu_readings` | `list[dict]` | `100` | Dicts with `accel_magnitude`, `vertical_roughness`, `angular_magnitude`, `is_rough` |
+| `clearance_readings` | `list[float]` | `100` | Raw minimum LIDAR clearance values (metres) |
+| `velocity_readings` | `list[float]` | `100` | Linear velocity magnitudes from wheel odometry (m/s) |
+
+The `buffer_size` constant is set to `100` readings. When a buffer exceeds this size, the oldest entry is removed with `pop(0)`. The periodic logging timer uses the **mean** of each buffer window as the reported value for that second.
+
+---
+
+## Logging Timer
+
+A ROS 2 timer fires at **1.0 Hz** (every second) and calls `periodic_logging()`. Each invocation:
+
+1. Computes window averages over the three rolling buffers.
+2. Reads the latest IMU dict from the tail of `imu_readings`.
+3. Writes one row to the CSV file.
+4. Increments `update_count`.
+
+```python
+self.create_timer(1.0, self.periodic_logging)  # Log every second
+```
+
+The node clock is used for the timestamp column (`current_time.to_msg().sec`), so the log timestamps are synchronised with the simulation clock when `use_sim_time` is active.
+
+---
+
+## Output CSV Location
+
+Logs are written to a timestamped file under a fixed base directory:
+
+```
+/home/jack/src/RoboTerrain/metrics_analyzer/data/metric_logs/metrics_log_YYYYMMDD_HHMMSS.csv
+```
+
+The directory is created automatically with `os.makedirs(..., exist_ok=True)` if it does not exist. The timestamp suffix (`YYYYMMDD_HHMMSS`) is generated from `datetime.now()` at node startup, so each run produces a unique file.
+
+<Tip>
+  When running multiple training episodes back-to-back without restarting the node, all episodes will write to the **same** CSV file. Use the `Timestamp` column to segment episodes in your analysis scripts.
+</Tip>
+
+---
+
+## CSV Columns
+
+The CSV file is written with a header row by `create_csv_header()`. Each subsequent row is appended by `periodic_logging()` once per second.
+
+| Column | Source | Description |
+|---|---|---|
+| `Timestamp` | `clock.now().to_msg().sec` | ROS time in integer seconds (simulation time when `use_sim_time=true`) |
+| `Total Collisions` | `metrics['total_collisions']` | Cumulative count of frames where obstacle clearance dropped below 0.2 m |
+| `Current Collision Status` | Buffer mean vs threshold | `1` if the current window mean clearance is below `collision_threshold`, else `0` |
+| `Smoothness Metric` | `metrics['smoothness_metric']` | Cumulative sum of per-IMU-update smoothness scores (accel + angular velocity magnitudes) |
+| `Current Smoothness` | Buffer window mean | Mean of `accel_magnitude + angular_magnitude` over the last 100 IMU readings |
+| `Obstacle Clearance` | Buffer window mean | Mean of the last 100 minimum LIDAR clearance readings (metres) |
+| `Distance Traveled` | `metrics['total_distance']` | Cumulative ground-truth distance travelled (metres), with outlier filtering |
+| `Current Velocity` | Buffer window mean | Mean of the last 100 wheel-odometry velocity magnitudes (m/s) |
+| `IMU Acceleration Magnitude` | Latest IMU reading | `sqrt(ax²+ay²+az²)` from the most recent IMU message |
+| `Is Rough Terrain` | Latest IMU reading | `1` if latest acceleration magnitude exceeds `rough_terrain_threshold` (15.0 m/s²), else `0` |
+| `Vertical Roughness` | Latest IMU reading | `|az|` — vertical acceleration component (m/s²); indicator of bump severity |
+| `Notes` | Threshold checks | `"Normal operation"` or semicolon-separated flags (e.g., `"Low clearance; Rough terrain"`) |
+
+### Example CSV Row
+
+```
+1712345678,3,0,4521.23,2.14,0.8732,47.2341,0.6120,2.3400,0,0.9812,Normal operation
+```

@@ -1,0 +1,352 @@
+---
+title: "RoverEnv: Gymnasium Environment API Reference"
+sidebarTitle: "RoverEnv"
+description: "Complete API reference for RoverEnv — the LIDAR, IMU, and pose-based Gymnasium environment for rover navigation training in RoboTerrain."
+---
+
+`RoverEnv` is the foundational Gymnasium-compatible environment for training a rover agent on point-navigation tasks in RoboTerrain simulations. It bridges ROS2 sensor topics — LIDAR scans, IMU orientation, wheel odometry, and ground-truth pose — into a structured observation dict that reinforcement learning algorithms such as Stable-Baselines3 can consume directly. The environment supports three distinct simulated worlds (`inspect`, `moon`, and `maze`), each with its own spawn bounds and out-of-bounds thresholds. Source: `ros2_ws/src/sb3/environments/rover_env.py`.
+
+---
+
+## Constructor
+
+```python
+RoverEnv(
+    size=(64, 64),
+    length=2000,
+    scan_topic='/scan',
+    imu_topic='/imu/data',
+    cmd_vel_topic='/cmd_vel',
+    camera_topic='/camera/image_raw',
+    world_n='inspect',
+    connection_check_timeout=30,
+    lidar_points=32,
+    max_lidar_range=12.0,
+)
+```
+
+<ParamField path="size" type="tuple" default="(64, 64)">
+  Dimensions of the internal image buffer allocated for the grayscale camera channel. This buffer is reserved for vision extensions; the default observation space does not include the raw camera image.
+</ParamField>
+
+<ParamField path="length" type="int" default="2000">
+  Maximum number of environment steps per episode. When `self._step >= length` the `done` flag is set to `True` and the episode terminates normally (truncated is always `False`).
+</ParamField>
+
+<ParamField path="scan_topic" type="str" default="'/scan'">
+  ROS2 topic name for the `sensor_msgs/LaserScan` LIDAR messages. The subscriber is created in `__init__` and data is received asynchronously via `lidar_callback`.
+</ParamField>
+
+<ParamField path="imu_topic" type="str" default="'/imu/data'">
+  ROS2 topic name for the `sensor_msgs/Imu` messages. Roll, pitch, and yaw are extracted from the quaternion and stored for inclusion in the `imu` observation key.
+</ParamField>
+
+<ParamField path="cmd_vel_topic" type="str" default="'/cmd_vel'">
+  ROS2 topic name for the `geometry_msgs/Twist` velocity command publisher. Each `step()` call publishes a `Twist` message with the computed linear and angular velocities to this topic.
+</ParamField>
+
+<ParamField path="camera_topic" type="str" default="'/camera/image_raw'">
+  ROS2 topic name for the raw camera image stream. Used to pre-allocate the image buffer; not currently included in the default Dict observation space.
+</ParamField>
+
+<ParamField path="world_n" type="str" default="'inspect'">
+  Name of the simulated world. Accepted values are `'inspect'`, `'moon'`, and `'maze'`. The world name controls spawn-position ranges, goal-position ranges, and out-of-bounds thresholds. It is also embedded in the Ignition Gazebo service path (`/world/<world_n>/set_pose`) used for pose resets.
+</ParamField>
+
+<ParamField path="connection_check_timeout" type="int" default="30">
+  Number of seconds to wait for the first LIDAR scan before concluding that no physical robot is connected. If the timeout is reached without receiving a scan the environment logs a warning and continues in simulation-only mode.
+</ParamField>
+
+<ParamField path="lidar_points" type="int" default="32">
+  Number of LIDAR points in the downsampled scan. The raw scan is divided into `lidar_points` equal segments and the minimum range in each segment is kept, so the agent sees a compact worst-case radial profile.
+</ParamField>
+
+<ParamField path="max_lidar_range" type="float" default="12.0">
+  Maximum valid LIDAR range in metres. Infinity and NaN values in the raw scan are clipped to this value before downsampling. Also used as the `high` bound of the `lidar` observation sub-space.
+</ParamField>
+
+---
+
+## Observation Space
+
+`RoverEnv` exposes a `gymnasium.spaces.Dict` observation containing five named sub-spaces:
+
+```python
+spaces.Dict({
+    'lidar': spaces.Box(
+        low=0,
+        high=12.0,          # max_lidar_range
+        shape=(32,),        # lidar_points
+        dtype=np.float32
+    ),
+    'pose': spaces.Box(
+        low=np.array([-30.0, -30.0, -10.0]),
+        high=np.array([ 30.0,  30.0,  10.0]),
+        dtype=np.float32
+    ),
+    'imu': spaces.Box(
+        low=np.array([-np.pi, -np.pi, -np.pi]),
+        high=np.array([ np.pi,  np.pi,  np.pi]),
+        dtype=np.float32
+    ),
+    'target': spaces.Box(
+        low=np.array([0,     -np.pi]),
+        high=np.array([100,   np.pi]),
+        shape=(2,),
+        dtype=np.float32
+    ),
+    'velocities': spaces.Box(
+        low=np.array([-10.0, -10.0]),
+        high=np.array([ 10.0,  10.0]),
+        shape=(2,),
+        dtype=np.float32
+    ),
+})
+```
+
+| Key | Shape | Description |
+|-----|-------|-------------|
+| `lidar` | `(32,)` | Downsampled LIDAR scan; each element is the minimum range (m) within a sweep segment. Clipped to `[0, max_lidar_range]`. |
+| `pose` | `(3,)` | Ground-truth rover position `[x, y, z]` in metres, sourced from `/rover/pose_array`. |
+| `imu` | `(3,)` | Orientation `[pitch, roll, yaw]` in radians derived from the IMU quaternion via `transforms3d.euler.quat2euler`. |
+| `target` | `(2,)` | Navigation target info `[distance_m, relative_angle_rad]`. Distance is Euclidean to the current goal; angle is relative to the rover's current yaw. |
+| `velocities` | `(2,)` | Current `[linear_velocity, angular_velocity]` from wheel odometry (`/odometry/wheels`). |
+
+---
+
+## Action Space
+
+```python
+spaces.Box(
+    low=np.array([-1.0, -np.pi]),
+    high=np.array([ 1.0,  np.pi]),
+    dtype=np.float32
+)
+```
+
+The action vector has two continuous components:
+
+| Index | Meaning | Range |
+|-------|---------|-------|
+| `action[0]` | Target linear speed (m/s) | `[-1.0, 1.0]` |
+| `action[1]` | Desired heading offset (rad) | `[-π, π]` |
+
+Inside `step()`, the desired heading offset is added to the current yaw to produce an absolute target heading, which is then tracked by the on-board PID heading controller. The resulting angular velocity command is clipped to `±7.0 rad/s` before being published on `cmd_vel_topic`.
+
+---
+
+## Methods
+
+### `step(action) -> tuple`
+
+```python
+observation, reward, done, truncated, info = env.step(action)
+```
+
+Executes one environment step. The method:
+
+1. Checks for flip, stuck-in-collision, out-of-bounds, and stuck conditions — terminating early with the appropriate penalty if any are triggered.
+2. Waits (spin-once loop) until a fresh LIDAR scan has been received.
+3. Converts `action` into a `Twist` command (linear speed + PID-computed angular velocity) and publishes it.
+4. Calls `task_reward()` to compute the scalar reward.
+5. Increments `_step`; sets `done = True` when `_step >= length`.
+6. Returns `(observation, reward, done, False, info)`.
+
+`info` dict keys: `steps`, `total_steps`, `reward`.
+
+---
+
+### `reset(seed=None, options=None) -> tuple`
+
+```python
+observation, info = env.reset()
+```
+
+Resets the episode to a randomised initial state:
+
+1. Publishes a zero-velocity `Twist` to stop the rover.
+2. Samples a random `(x, y)` spawn position within `rand_x_range` / `rand_y_range` for the current world.
+3. Samples a random yaw in `[-π, π]` and converts to a quaternion.
+4. Calls the Ignition Gazebo `ign service` CLI to teleport the rover model.
+5. Samples a new random goal position within `rand_goal_x_range` / `rand_goal_y_range`.
+6. Spins the ROS2 node for 100 × 0.1 s to let pose settle, then sleeps 1 s.
+7. Returns the initial observation and an empty info dict.
+
+<ParamField path="seed" type="int | None" default="None">
+  Optional RNG seed forwarded to the parent `gym.Env.reset()`.
+</ParamField>
+
+<ParamField path="options" type="dict | None" default="None">
+  Currently unused; reserved for future configuration overrides.
+</ParamField>
+
+---
+
+### `get_observation() -> dict`
+
+Returns the current observation dictionary without advancing the simulation:
+
+```python
+{
+    'lidar':      self.lidar_data,                          # np.ndarray (32,)
+    'pose':       self.rover_position,                      # np.ndarray (3,)
+    'imu':        [pitch, roll, yaw],                       # np.ndarray (3,)
+    'target':     self.get_target_info(),                   # np.ndarray (2,)
+    'velocities': [linear_velocity, angular_velocity],      # np.ndarray (2,)
+}
+```
+
+---
+
+### `get_target_info() -> np.ndarray`
+
+```python
+info = env.get_target_info()  # shape (2,)
+```
+
+Computes and returns `[distance, relative_angle]` to the current goal:
+
+- **distance** — Euclidean distance in metres between the rover's current `(x, y)` and the target `(target_positions_x, target_positions_y)`.
+- **relative_angle** — Angle in radians from the rover's current heading to the bearing towards the target, normalised to `[-π, π]` via `atan2`.
+
+---
+
+### `task_reward() -> float`
+
+Computes the scalar reward for the current step. See the [Reward Function](#reward-function) section for the full breakdown.
+
+---
+
+### `is_robot_flipped() -> Union[str, bool]`
+
+```python
+status = env.is_robot_flipped()
+# Returns: 'roll_left' | 'roll_right' | 'pitch_forward' | 'pitch_backward' | False
+```
+
+Returns a descriptive string if either `|roll|` or `|pitch|` exceeds the flip threshold of **1.48 rad (~85°)**, otherwise returns `False`. The direction string indicates which axis and which direction the flip occurred in.
+
+---
+
+### `heading_controller(desired_heading, current_heading) -> float`
+
+```python
+angular_velocity = env.heading_controller(desired_heading, current_heading)
+```
+
+A PID controller that drives the rover's yaw towards `desired_heading`. The heading error is computed as `atan2(sin(Δ), cos(Δ))` to handle wrap-around correctly.
+
+| PID Parameter | Value |
+|---------------|-------|
+| `Kp` | 2.0 |
+| `Ki` | 0.0 |
+| `Kd` | 0.1 |
+| Max output | ±7.0 rad/s |
+
+<ParamField path="desired_heading" type="float">
+  Absolute target heading in radians. Computed inside `step()` as `current_yaw + action[1]`.
+</ParamField>
+
+<ParamField path="current_heading" type="float">
+  Current rover yaw in radians as reported by the IMU.
+</ParamField>
+
+---
+
+### `too_far_away() -> bool`
+
+Returns `True` when the rover's `(x, y)` position falls outside the world-specific bounding box. When `True`, `step()` terminates the episode immediately with the `too_far_away_penalty` reward.
+
+---
+
+### `render()`
+
+No-op. The environment does not produce a display output; all visualisation is handled externally through Gazebo and RViz.
+
+---
+
+### `close()`
+
+```python
+env.close()
+```
+
+Destroys the internal ROS2 node (`self.node.destroy_node()`) and calls `rclpy.shutdown()`. Always call this when training is finished to avoid dangling ROS2 handles.
+
+---
+
+## Reward Function
+
+`task_reward()` is called once per `step()` and returns a single scalar. The components are evaluated in priority order:
+
+### Goal Reward
+```
+reward = +100
+```
+Triggered when Euclidean distance to the current goal drops below **0.5 m**. After granting the reward the target is relocated to a new random position within the world's goal bounds and the episode continues.
+
+### Distance Reward
+```
+distance_delta = previous_distance - current_distance
+distance_reward = distance_delta × 0.3
+final_reward   = distance_reward × 1.5   (multiplier)
+```
+Applied only when `|distance_delta| > 0.001` **and** the heading alignment reward is positive (i.e., the rover is broadly facing the goal). If either condition fails a small idle penalty of **−0.03** is applied instead.
+
+### Velocity Bonus
+```
+velocity_bonus = current_linear_velocity × 0.0025
+```
+A small per-step reward for moving forward, encouraging the agent to maintain speed rather than stopping.
+
+### Turn Penalty
+```
+turn_penalty = −0.0015 × |angular_velocity|
+```
+Discourages excessive spinning. Applied every step regardless of other conditions.
+
+### Collision Penalty
+```
+reward = −0.5
+```
+Applied when any LIDAR reading drops below **0.3 m** (imminent collision). The episode does _not_ terminate on a single collision; persistent collision over `collision_window` steps triggers the general penalty instead.
+
+### Stuck Penalty
+```
+reward = −25.0   (stuck_penalty)
+```
+Triggered when the rover moves less than **0.001 m** total in the last **600 steps** (`stuck_window`). The episode ends immediately.
+
+### General Penalty
+```
+reward = −20.0   (general_penalty)
+```
+Returned when the rover flips (after step 500) or becomes persistently stuck in a collision for more than `collision_window` steps.
+
+### Too-Far Penalty
+```
+reward = −10.0   (too_far_away_penalty)
+```
+Returned when `too_far_away()` is `True`. The episode ends immediately.
+
+---
+
+## World-Specific Parameters
+
+Each world name sets a distinct set of geographic boundaries used for random spawn and goal placement, as well as out-of-bounds detection.
+
+| Parameter | `inspect` | `moon` | `maze` (default) |
+|-----------|-----------|--------|-----------------|
+| `rand_goal_x_range` | `(-27, -19)` | `(-4, 4)` | `(-4, 4)` |
+| `rand_goal_y_range` | `(-27, -19)` | `(-4, 4)` | `(-4, 4)` |
+| `rand_x_range` | `(-27, -19)` | `(-4, 4)` | `(-4, 4)` |
+| `rand_y_range` | `(-27, -19)` | `(-4, 4)` | `(-4, 4)` |
+| `too_far_away_low_x` | `-29` | `-20` | `-30` |
+| `too_far_away_high_x` | `-13` | `10` | `30` |
+| `too_far_away_low_y` | `-29` | `-20` | `-30` |
+| `too_far_away_high_y` | `-17` | `20` | `30` |
+| `too_far_away_penalty` | `-10.0` | `-10.0` | `-10.0` |
+
+<Note>
+  The `inspect` world uses elevated spawn heights. When both `x < -24.5` and `y < -24.5`, the rover is spawned at `z = 6.5` instead of the standard `z = 5.5` to clear terrain features in the corner of the inspection zone.
+</Note>
