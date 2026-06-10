@@ -1,7 +1,7 @@
 ---
-title: "Real-Time Navigation Metrics Logging with ROS 2"
+title: "Rover Metrics Logging Node: Real-Time ROS 2 CSV Output"
 sidebarTitle: "Logging"
-description: "The MetricsNode ROS 2 node collects collision, velocity, IMU, obstacle clearance, and terrain data in real time and writes timestamped CSV files for offline analysis."
+description: "MetricsNode logs collision, IMU, clearance, and terrain metrics to timestamped CSV files at 1 Hz via four ROS 2 topic subscriptions."
 ---
 
 The `MetricsNode` is a ROS 2 node in the `rover_metrics` package that continuously monitors your rover's performance during simulation. It subscribes to four sensor topics — LIDAR, IMU, pose, and odometry — and aggregates collision counts, velocity readings, terrain roughness, and obstacle clearance into a single timestamped CSV file that persists after each run. Every metric is computed from raw sensor data using configurable thresholds, so you can adapt the node to different robot platforms and terrain profiles without touching the core logging logic.

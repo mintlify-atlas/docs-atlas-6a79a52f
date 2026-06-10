@@ -1,7 +1,7 @@
 ---
 title: "Get Started with RoboTerrain in 5 Steps"
 sidebarTitle: "Quickstart"
-description: "Clone RoboTerrain, build the ROS 2 workspace, launch the Gazebo simulation, and run your first SAC navigation agent in under 15 minutes."
+description: "Clone RoboTerrain, build the ROS 2 workspace with colcon, launch Gazebo Fortress, and run your first SAC navigation agent in under 15 minutes."
 ---
 
 This guide walks you through everything needed to go from a fresh Ubuntu 22.04 machine to a running RoboTerrain simulation with a pre-trained SAC agent navigating the Inspection world. By the end you will have Gazebo Fortress open with the Rover Zero 4WD spawned, the position bridge node streaming pose data over ROS 2, and the SAC agent driving the robot autonomously — all in under 15 minutes.
@@ -12,7 +12,7 @@ This guide walks you through everything needed to go from a fresh Ubuntu 22.04 m
 
 <Steps>
   <Step title="Clone the Repository">
-    Clone RoboTerrain from GitHub using SSH, then navigate into the ROS 2 workspace directory:
+    Clone RoboTerrain from GitHub using SSH, then navigate into the repository directory:
 
     ```bash
     git clone git@github.com:jackvice/RoboTerrain.git
@@ -42,7 +42,7 @@ This guide walks you through everything needed to go from a fresh Ubuntu 22.04 m
     pip install stable-baselines3[extra] transforms3d
     ```
 
-    If you intend to experiment with model-based agents, `jax` is listed in `requirements.txt` as an optional dependency for DreamerV3-style approaches:
+    If you intend to experiment with model-based or JAX-based agents, `jax` is listed in `requirements.txt` as an optional dependency:
 
     ```bash
     # Optional — only needed for JAX-based agent experiments
@@ -83,17 +83,17 @@ This guide walks you through everything needed to go from a fresh Ubuntu 22.04 m
   </Step>
 
   <Step title="Run the SAC Agent">
-    Open a second terminal and navigate to the SB3 agent directory. The agent requires two processes: a **position bridge node** that translates Ignition pose messages into a ROS 2 topic the environment can read, and the **SAC inference script** itself.
+    Open a second terminal and navigate to the pose bridge directory. The agent requires two processes: a **position bridge node** that translates Ignition pose messages into a ROS 2 topic the environment can read, and the **SAC inference script** itself.
 
     <Note>
-      `ign_ros2_pose_topic.py` **must be started first** and left running in the background. It subscribes to the Gazebo dynamic pose stream and republishes the robot's world-frame position as a `/rover/pose_array` topic. `sb3_SAC.py` reads from this topic to compute goal-relative observations — if the bridge is not running, the environment will block indefinitely on the first `reset()` call.
+      `ign_ros2_Nav2_topics.py` **must be started first** and left running in the background. It subscribes to the Gazebo dynamic pose stream and republishes the robot's world-frame position as a `/rover/pose_array` topic. `sb3_SAC.py` reads from this topic to compute goal-relative observations — if the bridge is not running, the environment will block indefinitely on the first `reset()` call.
     </Note>
 
     ```bash
-    cd RoboTerrain/ros2_ws/src/sb3/
+    cd RoboTerrain/ros2_ws/src/pose_topic/
 
     # Step 1 — Start the position bridge for the Inspection world (leave this running)
-    python ign_ros2_pose_topic.py inspect rover_zero4wd
+    python ign_ros2_Nav2_topics.py inspect rover_zero4wd
     ```
 
     Open a **third terminal**, then start the pre-trained SAC agent in predict mode:
@@ -136,7 +136,7 @@ Now that you have a working simulation and a running agent, explore the rest of 
     Explore the LiDAR-fused and vision-fused Gymnasium environment implementations, observation and action spaces, and reward shaping strategies.
   </Card>
   <Card title="Simulation Worlds" icon="globe" href="/simulation/worlds">
-    Switch between Inspection, Maze, Island, Rubicon, and Construction worlds. Learn how to modify terrain, add obstacles, and create your own Gazebo SDF world.
+    Switch between Inspection, Maze, Island, Rubicon, Construction, and MarsYard worlds. Learn how to modify terrain, add obstacles, and create your own Gazebo SDF world.
   </Card>
   <Card title="Metrics & Logging" icon="chart-bar" href="/metrics/logging">
     Use the `rover_metrics` ROS 2 node to capture SR, TC, MTT, TR, and VORT, then generate publication-ready comparison plots across multiple experimental trials.

@@ -23,7 +23,7 @@ Before launching the inference script, two things must be true:
     ```
   </Card>
   <Card title="Position Bridge Active" icon="arrows-to-circle">
-    The `ign_ros2_pose_topic.py` bridge must be publishing ground-truth pose on `/rover/pose_array`. See the section below for the exact command.
+    The `ign_ros2_Nav2_topics.py` bridge must be publishing ground-truth pose on `/rover/pose_array`. See the section below for the exact command.
   </Card>
 </CardGroup>
 
@@ -85,7 +85,7 @@ python sb3_SAC.py \
 ```
 
 <Note>
-`--vision False` selects the LIDAR+pose `RoverEnvFused` (discrete) path in `sb3_SAC.py`. To run inference with the fused camera observation produced by the Active Vision pipeline, pass `--vision True` and ensure `inference.py` is writing to shared memory first.
+`--vision False` selects the standard LIDAR+pose `RoverEnv` path in `sb3_SAC.py`. To run inference with the fused camera observation produced by the Active Vision pipeline, pass `--vision True` and ensure `inference.py` is writing to shared memory first.
 </Note>
 
 ---

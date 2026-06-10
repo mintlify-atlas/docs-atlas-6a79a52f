@@ -1,10 +1,10 @@
 ---
-title: "Robot Models: Rover Zero, Leo Rover, and Husky"
+title: "Robot Models: Rover Zero 4WD and Leo Rover"
 sidebarTitle: "Robots"
-description: "RoboTerrain includes SDF and URDF models for the Rover Zero 4WD, Leo Rover with fisheye camera, and Clearpath Husky platforms for Gazebo Fortress simulation."
+description: "RoboTerrain includes SDF models for the Rover Zero 4WD and Leo Rover platforms with multiple sensor head configurations for Gazebo Fortress simulation."
 ---
 
-RoboTerrain ships with simulation-ready robot models for three platforms: the Rover Zero 4WD, the Leo Rover (with multiple sensor head configurations), and the Clearpath Husky. SDF model files for the Rover Zero are located in `ros2_ws/src/roverrobotics_ros2/roverrobotics_description/urdf/`, while Leo Rover SDF variants live in `ros2_ws/src/roverrobotics_ros2/leo_description/sdf/`. Each platform is launched by a dedicated launch file in `ros2_ws/src/roverrobotics_ros2/roverrobotics_gazebo/launch/`.
+RoboTerrain ships with simulation-ready robot models for two platforms: the Rover Zero 4WD and the Leo Rover (with multiple sensor head configurations). SDF model files for the Rover Zero are located in `ros2_ws/src/roverrobotics_ros2/roverrobotics_description/urdf/`, while Leo Rover SDF variants live in `ros2_ws/src/roverrobotics_ros2/leo_description/sdf/`. Each platform is launched by a dedicated launch file in `ros2_ws/src/roverrobotics_ros2/roverrobotics_gazebo/launch/`.
 
 ---
 
@@ -79,14 +79,17 @@ gz_spawn_entity = Node(
 
 ### Leo Rover Sensor Configurations
 
-RoboTerrain provides four SDF variants of the Leo Rover, each with a different sensor head. Select the appropriate file in the launch file's `gz_spawn_entity` node.
+RoboTerrain provides seven SDF files for the Leo Rover in `leo_description/sdf/`. Select the appropriate file in the launch file's `gz_spawn_entity` node.
 
 | SDF File | Sensors | Primary Use Case |
 |---|---|---|
+| `leo_sim.sdf` | Base Leo Rover without extra sensors | Default Leo Rover simulation (`Leo_rover_gazebo.launch.py`) |
+| `leo_sim_fisheye.sdf` | Fisheye wide-angle camera | AVSN pipeline — six rectified 320×320 windows at ~160° FOV |
 | `leo_lidar.sdf` | 2D LIDAR | Standard LiDAR-based navigation and obstacle avoidance |
 | `leo_depth.sdf` | Depth camera (RGBD) | Depth-based perception and Nav2 costmap generation |
 | `leo_AV_Lidar.sdf` | LIDAR + active vision head | Active vision research requiring both range data and gaze control |
-| `leo_sim_fisheye.sdf` | Fisheye wide-angle camera | AVSN pipeline — six rectified 320×320 windows at ~160° FOV |
+| `leo_sim_ODE.sdf` | Base Leo Rover with ODE physics solver | Physics-solver comparison experiments |
+| `leo_sim_works.sdf` | Verified working baseline configuration | Reference model for debugging simulation issues |
 
 <Accordion title="Available Leo Rover launch files">
   | Launch File | Default SDF | Notes |
@@ -103,28 +106,32 @@ RoboTerrain provides four SDF variants of the Leo Rover, each with a different s
 
 ## ROS 2 Bridge Topics
 
-Both the Rover Zero and Leo Rover launch files configure a `ros_gz_bridge` node (`parameter_bridge`) that translates Ignition Gazebo messages to standard ROS 2 topics. The table below lists all bridged topics.
+Both the Rover Zero and Leo Rover launch files configure a `ros_gz_bridge` node (`parameter_bridge`) that translates Ignition Gazebo messages to standard ROS 2 topics. The table below lists all bridged topics from the actual `arguments=[]` in `4wd_rover_gazebo.launch.py` and `Leo_rover_fisheye.launch.py`.
 
 | ROS 2 Topic | Message Type | Direction | Description |
 |---|---|---|---|
 | `/cmd_vel` | `geometry_msgs/msg/Twist` | Bidirectional (`@`) | Velocity command input from the RL agent or Nav2 |
 | `/clock` | `rosgraph_msgs/msg/Clock` | Gazebo → ROS (`[`) | Simulation clock for `use_sim_time` |
-| `/scan` | `sensor_msgs/msg/LaserScan` | Bidirectional (`@`) | 2D LIDAR scan (Rover Zero and LIDAR Leo variants) |
-| `/imu/data` | `sensor_msgs/msg/Imu` | Bidirectional (`@`) | IMU acceleration and orientation |
 | `/odometry/wheels` | `nav_msgs/msg/Odometry` | Bidirectional (`@`) | Wheel odometry from the differential drive plugin |
-| `/camera/image_raw` | `sensor_msgs/msg/Image` | Bidirectional (`@`) | Raw camera image (or fisheye frame for Leo fisheye) |
-| `/camera_info` | `sensor_msgs/msg/CameraInfo` | Bidirectional (`@`) | Camera intrinsic parameters |
 | `/tf` | `tf2_msgs/msg/TFMessage` | Gazebo → ROS (`[`) | Transform tree from Ignition pose messages |
 | `/joint_states` | `sensor_msgs/msg/JointState` | Gazebo → ROS (`[`) | Joint state information |
-| `/rover/pose_array` | `geometry_msgs/msg/PoseArray` | Gazebo → ROS (`[`) | Full world dynamic pose information (used by metrics and RL reset) |
+| `/scan` | `sensor_msgs/msg/LaserScan` | Bidirectional (`@`) | 2D LIDAR scan (Rover Zero and LIDAR Leo variants; commented out in fisheye launch) |
+| `/imu/data` | `sensor_msgs/msg/Imu` | Bidirectional (`@`) | IMU acceleration and orientation |
+| `/camera/image_raw` | `sensor_msgs/msg/Image` | Bidirectional (`@`) | Raw camera image (or fisheye frame for Leo fisheye) |
+| `/camera_info` | `sensor_msgs/msg/CameraInfo` | Bidirectional (`@`) | Camera intrinsic parameters |
+| `/world/default/dynamic_pose/info` | `geometry_msgs/msg/PoseArray` | Gazebo → ROS (`[`) | Full world dynamic pose information — used by the Rover Zero pipeline |
+| `/world/inspect/dynamic_pose/info` | `geometry_msgs/msg/PoseArray` | Gazebo → ROS (`[`) | Full world dynamic pose information — used by the Leo Rover fisheye pipeline |
 
-The Leo Rover fisheye launch file additionally bridges per-actor pose topics for dynamic obstacle avoidance:
+The Leo Rover fisheye launch file additionally bridges per-actor pose topics and the robot reset service:
 
 ```python
-# Inspect world actor pose topics
+# Inspect world actor pose topics (Leo_rover_fisheye.launch.py)
 '/linear_actor/pose@geometry_msgs/msg/Pose[gz.msgs.Pose',
 '/diag_actor/pose@geometry_msgs/msg/Pose[gz.msgs.Pose',
 '/triangle_actor/pose@geometry_msgs/msg/Pose[gz.msgs.Pose',
+
+# Robot pose reset service
+'/world/inspect/set_pose@ros_gz_interfaces/srv/SetEntityPose',
 ```
 
 ---
@@ -140,5 +147,5 @@ ros2_ws/src/leo_simulator-ros2/leo_gz_plugins/src/differential_system.cpp
 This C++ plugin implements the Ignition Gazebo `ISystemPreUpdate` interface and translates incoming `/cmd_vel` `Twist` messages into individual wheel torque commands for the Leo Rover's four-wheel-drive configuration. It is compiled as part of the `leo_gz_plugins` package during `colcon build`.
 
 <Tip>
-  When working with the SAC/PPO RL agents, the metrics node subscribes to `/scan`, `/imu/data`, `/rover/pose_array`, and `/odometry/wheels`. Ensure these bridge topics are active (i.e., the bridge node is running) before starting any training or evaluation scripts.
+  When working with the SAC/PPO RL agents, the metrics node subscribes to `/scan`, `/imu/data`, `/world/default/dynamic_pose/info`, and `/odometry/wheels`. Ensure these bridge topics are active (i.e., the bridge node is running) before starting any training or evaluation scripts.
 </Tip>

@@ -1,7 +1,7 @@
 ---
-title: "Analyze and Visualize Navigation Metrics with CLI"
+title: "Analyze and Visualize Navigation Metrics with CLI Tool"
 sidebarTitle: "Analysis"
-description: "Use cli_main.py to compare multi-trial navigation metrics, generate time-series plots, and produce publication-ready visualizations from RoboTerrain CSV log files."
+description: "Use cli_main.py to compare multi-trial rover metrics, generate time-series and correlation plots, and export figures from RoboTerrain CSV logs."
 ---
 
 `cli_main.py` provides the `MetricsAnalyzerCLI` class, a unified command-line tool that wraps three backend components — `MetricsDataLoader`, `MetricsStatistics`, and `TimeSeriesVisualizer` — into a single workflow for offline analysis of RoboTerrain session logs. You point it at one or more CSV files produced by `MetricsNode`, specify which metrics and plot types you want, and the tool handles outlier removal, optional time normalization, statistical computation, and figure generation automatically. Output is saved as both PDF and PNG files under a structured output directory, making results easy to share or include in research papers.

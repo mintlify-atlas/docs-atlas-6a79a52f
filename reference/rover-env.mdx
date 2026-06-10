@@ -1,7 +1,7 @@
 ---
-title: "RoverEnv: Gymnasium Environment API Reference"
+title: "RoverEnv Gymnasium Environment API Reference Guide"
 sidebarTitle: "RoverEnv"
-description: "Complete API reference for RoverEnv — the LIDAR, IMU, and pose-based Gymnasium environment for rover navigation training in RoboTerrain."
+description: "Complete API reference for RoverEnv — the LIDAR, IMU, and pose-based Gymnasium environment for rover navigation training in RoboTerrain simulations."
 ---
 
 `RoverEnv` is the foundational Gymnasium-compatible environment for training a rover agent on point-navigation tasks in RoboTerrain simulations. It bridges ROS2 sensor topics — LIDAR scans, IMU orientation, wheel odometry, and ground-truth pose — into a structured observation dict that reinforcement learning algorithms such as Stable-Baselines3 can consume directly. The environment supports three distinct simulated worlds (`inspect`, `moon`, and `maze`), each with its own spawn bounds and out-of-bounds thresholds. Source: `ros2_ws/src/sb3/environments/rover_env.py`.
@@ -54,7 +54,7 @@ RoverEnv(
 </ParamField>
 
 <ParamField path="connection_check_timeout" type="int" default="30">
-  Number of seconds to wait for the first LIDAR scan before concluding that no physical robot is connected. If the timeout is reached without receiving a scan the environment logs a warning and continues in simulation-only mode.
+  Number of seconds to wait for the first LIDAR scan before concluding that no physical robot is connected. If the timeout is reached without receiving a scan, `_check_robot_connection` returns `False` and the environment logs a warning and continues in simulation-only mode.
 </ParamField>
 
 <ParamField path="lidar_points" type="int" default="32">
@@ -255,7 +255,7 @@ A PID controller that drives the rover's yaw towards `desired_heading`. The head
 
 ### `too_far_away() -> bool`
 
-Returns `True` when the rover's `(x, y)` position falls outside the world-specific bounding box. When `True`, `step()` terminates the episode immediately with the `too_far_away_penalty` reward.
+Returns `True` when the rover's `(x, y)` position falls outside the world-specific bounding box. When `True`, `step()` terminates the episode immediately with the `too_far_away_penilty` reward (`-10.0`).
 
 ---
 
@@ -275,6 +275,49 @@ Destroys the internal ROS2 node (`self.node.destroy_node()`) and calls `rclpy.sh
 
 ---
 
+### `pose_array_callback(msg)`
+
+Subscriber callback for `/rover/pose_array` (`geometry_msgs/PoseArray`). Extracts the first pose from the array, updates `self.current_pose`, and stores the position as a `(3,)` float32 NumPy array in `self.rover_position`.
+
+---
+
+### `lidar_callback(msg)`
+
+Subscriber callback for the `sensor_msgs/LaserScan` topic. Converts the raw range array to float32, replaces `inf` and `NaN` values with `max_lidar_range`, clips all values to `[0, max_lidar_range]`, downsamples to `lidar_points` by taking the minimum in each segment, and sets `self._received_scan = True` to signal `step()` that fresh data is available.
+
+---
+
+### `imu_callback(msg)`
+
+Subscriber callback for `sensor_msgs/Imu`. Normalises the quaternion, converts it to Euler angles using `transforms3d.euler.quat2euler` with `axes='sxyz'`, and stores `pitch`, `roll`, and `yaw` in `self.current_pitch`, `self.current_roll`, and `self.current_yaw`.
+
+---
+
+### `odom_callback(msg)`
+
+Subscriber callback for `/odometry/wheels` (`nav_msgs/Odometry`). Stores `msg.twist.twist.linear.x` and `msg.twist.twist.angular.z` in `self.current_linear_velocity` and `self.current_angular_velocity` respectively.
+
+---
+
+## Robot Connection Check
+
+At the end of `__init__`, `_check_robot_connection(timeout=connection_check_timeout)` is called. It spins the ROS2 node in a loop, waiting for the first LIDAR scan to arrive. If `self._received_scan` becomes `True` before the timeout elapses, it returns `True`. If the timeout (default 30 s) is exceeded without receiving any scan data, it returns `False` and the environment logs a warning and continues in simulation-only mode.
+
+---
+
+## Stuck Detection
+
+`RoverEnv` maintains a `position_history` list that records the rover's `(x, y)` coordinates at every step. The list is capped at `stuck_window = 600` entries. Once the list is full, `step()` checks whether the total displacement between the oldest and newest recorded position is less than `stuck_threshold = 0.001` m. If so, the episode terminates immediately with `stuck_penilty = -25.0`.
+
+```python
+# Checked every step once position_history has 600 entries
+distance_moved = sqrt((end_pos[0] - start_pos[0])**2 + (end_pos[1] - start_pos[1])**2)
+if distance_moved < 0.001:  # stuck_threshold
+    return obs, -25.0, True, False, {}  # stuck_penilty
+```
+
+---
+
 ## Reward Function
 
 `task_reward()` is called once per `step()` and returns a single scalar. The components are evaluated in priority order:
@@ -283,13 +326,13 @@ Destroys the internal ROS2 node (`self.node.destroy_node()`) and calls `rclpy.sh
 ```
 reward = +100
 ```
-Triggered when Euclidean distance to the current goal drops below **0.5 m**. After granting the reward the target is relocated to a new random position within the world's goal bounds and the episode continues.
+Triggered when Euclidean distance to the current goal drops below **0.5 m** (`success_distance`). After granting the reward the target is relocated to a new random position within the world's goal bounds and the episode continues.
 
 ### Distance Reward
 ```
 distance_delta = previous_distance - current_distance
-distance_reward = distance_delta × 0.3
-final_reward   = distance_reward × 1.5   (multiplier)
+distance_reward = distance_delta × 0.3        (distance_delta_scale)
+final_reward   = distance_reward × 1.5        (final_reward_multiplier)
 ```
 Applied only when `|distance_delta| > 0.001` **and** the heading alignment reward is positive (i.e., the rover is broadly facing the goal). If either condition fails a small idle penalty of **−0.03** is applied instead.
 
@@ -307,25 +350,25 @@ Discourages excessive spinning. Applied every step regardless of other condition
 
 ### Collision Penalty
 ```
-reward = −0.5
+reward = −0.5     (collision_penalty)
 ```
-Applied when any LIDAR reading drops below **0.3 m** (imminent collision). The episode does _not_ terminate on a single collision; persistent collision over `collision_window` steps triggers the general penalty instead.
+Applied when any LIDAR reading drops below **0.3 m** (`collision_threshold`). The episode does _not_ terminate on a single collision; persistent collision over `collision_window` steps triggers the general penalty instead.
 
 ### Stuck Penalty
 ```
-reward = −25.0   (stuck_penalty)
+reward = −25.0    (stuck_penilty)
 ```
 Triggered when the rover moves less than **0.001 m** total in the last **600 steps** (`stuck_window`). The episode ends immediately.
 
 ### General Penalty
 ```
-reward = −20.0   (general_penalty)
+reward = −20.0    (general_penility)
 ```
 Returned when the rover flips (after step 500) or becomes persistently stuck in a collision for more than `collision_window` steps.
 
 ### Too-Far Penalty
 ```
-reward = −10.0   (too_far_away_penalty)
+reward = −10.0    (too_far_away_penilty)
 ```
 Returned when `too_far_away()` is `True`. The episode ends immediately.
 
@@ -345,7 +388,7 @@ Each world name sets a distinct set of geographic boundaries used for random spa
 | `too_far_away_high_x` | `-13` | `10` | `30` |
 | `too_far_away_low_y` | `-29` | `-20` | `-30` |
 | `too_far_away_high_y` | `-17` | `20` | `30` |
-| `too_far_away_penalty` | `-10.0` | `-10.0` | `-10.0` |
+| `too_far_away_penilty` | `-10.0` | `-10.0` | `-10.0` |
 
 <Note>
   The `inspect` world uses elevated spawn heights. When both `x < -24.5` and `y < -24.5`, the rover is spawned at `z = 6.5` instead of the standard `z = 5.5` to clear terrain features in the corner of the inspection zone.

@@ -1,7 +1,7 @@
 ---
-title: "Nav2 Navigation Parameters for Leo Rover"
+title: "Nav2 Navigation Parameters for Leo Rover — RoboTerrain"
 sidebarTitle: "Nav2 Params"
-description: "Reference for Nav2 navigation stack parameters used in RoboTerrain for Leo Rover LIDAR and depth camera navigation, including planner, controller, and costmap settings."
+description: "Reference for Nav2 parameters in RoboTerrain covering Leo Rover LIDAR and depth camera configs, including DWB planner, SmacPlanner2D, and costmap settings."
 ---
 
 RoboTerrain integrates the ROS 2 Nav2 navigation stack to provide a classical planning baseline for comparison against reinforcement learning policies trained with Stable-Baselines3. Two fully-configured sensor variants are provided — one built around the Leo Rover's 360° GPU LIDAR and another built around a depth camera point cloud — allowing head-to-head evaluation of Nav2 against RL agents across the same DUnE benchmark worlds. A third general-purpose parameter file is included for physical rover deployments with a pre-built map.

@@ -1,7 +1,7 @@
 ---
 title: "Gazebo Fortress Worlds for Off-Road Navigation"
 sidebarTitle: "Worlds"
-description: "RoboTerrain ships with inspection, maze, island, rubicon, and construction Gazebo Fortress worlds for benchmarking off-road robot navigation algorithms."
+description: "RoboTerrain ships with inspection, maze, island, rubicon, and Mars terrain Gazebo Fortress worlds for benchmarking off-road robot navigation algorithms."
 ---
 
 RoboTerrain includes a diverse collection of Gazebo Fortress simulation worlds designed to challenge mobile robots across a range of unstructured and semi-structured terrains. All world files live under `ros2_ws/src/roverrobotics_ros2/roverrobotics_gazebo/worlds/` and are selected at launch time via the `world` argument in the respective launch file. Mars terrain models from the Leo Rover simulator package are located separately under `ros2_ws/src/leo_simulator-ros2/leo_gz_worlds/worlds/`.
@@ -28,7 +28,12 @@ RoboTerrain includes a diverse collection of Gazebo Fortress simulation worlds d
 | File | Description |
 |---|---|
 | `inspection_simple.world` | A sparse open inspection area with minimal clutter — ideal for baseline navigation runs and rapid iteration. |
-| `inspection_boxes_v4.world` | Industrial inspection site populated with crates and boxes. The `v4` variant balances obstacle density for active vision and social navigation research. Earlier variants (`v3`, `x10`, `x10_v2`) are also available for denser configurations. |
+| `inspection_boxes.world` | Inspection site with a standard box layout. |
+| `inspection_boxes_v3.world` | Dense box configuration used for Active Vision research. |
+| `inspection_boxes_v4.world` | Industrial inspection site with a balanced obstacle density — the default world for `Leo_rover_fisheye.launch.py`. |
+| `inspection_boxes_x10.world` | High-density box variant (10×) for stress-testing social navigation. |
+| `inspection_boxes_x10_v2.world` | Revised high-density variant used for the MDPI social navigation publication. |
+| `inspection.world` | Classic inspection environment. |
 
 ### Maze Worlds
 
@@ -37,6 +42,9 @@ RoboTerrain includes a diverse collection of Gazebo Fortress simulation worlds d
 | `maze_simple.sdf` | A clean, rectangular maze with wide corridors — a good starting point for evaluating global planners. |
 | `maze_pillars.sdf` | A maze variant with pillar obstacles instead of walls, creating a partially occluded navigation challenge. |
 | `maze_clean.sdf` | A streamlined maze without visual noise, intended for pure planning benchmarks. |
+| `maze_empty.sdf` | Empty maze shell with no internal obstacles. |
+| `maze.sdf` | Standard maze layout. |
+| `maze_and_person.sdf` | Maze with a static person actor pre-placed. |
 
 ### Outdoor Terrain Worlds
 
@@ -44,7 +52,23 @@ RoboTerrain includes a diverse collection of Gazebo Fortress simulation worlds d
 |---|---|
 | `island.sdf` | An outdoor terrain island with varied elevation and natural ground features. This is the **current default world** for `4wd_rover_gazebo.launch.py`. |
 | `rubicon.sdf` | Extreme off-road rocky terrain modelled after the Rubicon Trail. Use this world to stress-test VORT (Velocity Over Rough Terrain) and terrain-crossing performance. |
-| `office_cpr_construction.sdf` / `office_cpr_construction.world` | Clearpath Robotics CPR construction site — a semi-structured outdoor environment with ground clutter, ramps, and construction props. Requires the Clearpath model assets to be present (see `IGN_GAZEBO_RESOURCE_PATH` in the launch file). |
+| `simplecave3.sdf` | Narrow cave-like passage — useful for confined-space navigation research. |
+| `pillars.sdf` | Open area with scattered pillar obstacles. |
+| `depot.sdf` | Warehouse depot layout. |
+| `fortress.sdf` | Fortress-style walled environment. |
+| `office_cpr_construction.sdf` | Clearpath Robotics CPR construction site in SDF format. Requires the Clearpath model assets (see `IGN_GAZEBO_RESOURCE_PATH` in the launch file). |
+| `office_cpr_construction.world` | Legacy `.world` format of the CPR construction site. |
+
+### Legacy and Experimental Worlds
+
+| File | Description |
+|---|---|
+| `agriculture.world` | Agricultural field setting. |
+| `yosemite.world` | Yosemite terrain model. |
+| `simple_40m2.world` | Minimal 40 m² open area — useful for quick integration tests. |
+| `inspection_simple_ode.world` | ODE physics engine variant of the inspection simple world. |
+| `inspection_simple_odev2.world` | Second ODE variant with updated solver settings. |
+| `inspection_simple_backup.world` | Backup snapshot of the inspection simple world. |
 
 ### MarsYard Worlds
 
@@ -52,6 +76,7 @@ These worlds are provided by the `leo_gz_worlds` package at `ros2_ws/src/leo_sim
 
 | File | Description |
 |---|---|
+| `leo_empty.sdf` | Minimal empty Leo Rover world with Ignition physics and sensor plugins configured. |
 | `marsyard2020.sdf` | MarsYard 2020 photorealistic analog terrain model. |
 | `marsyard2021.sdf` | Updated 2021 MarsYard terrain with revised surface topology. |
 | `marsyard2022.sdf` | Latest MarsYard 2022 terrain — highest fidelity, recommended for planetary navigation studies. |
@@ -73,7 +98,7 @@ The active world is controlled by the `DeclareLaunchArgument` block near the top
     ```
   </Step>
   <Step title="Uncomment the desired world">
-    Locate the `declare_world_cmd` block (around line 24) and comment out the active line, then uncomment the world you want:
+    Locate the `declare_world_cmd` block and comment out the active line, then uncomment the world you want:
 
     ```python
     declare_world_cmd = DeclareLaunchArgument(
@@ -82,10 +107,11 @@ The active world is controlled by the `DeclareLaunchArgument` block near the top
         #default_value='office_cpr_construction.world',
         default_value='island.sdf',      # <-- currently active
 
-        #default_value='simplecave3.sdf',
+        #default_value='simplecave3.sdf,',
         #default_value='maze_simple.sdf',
         #default_value='maze_pillars.sdf',
         #default_value='inspection.world',
+        #default_value='simple_40m2.world',
         #default_value='maze_clean.sdf',
         #default_value='maze_empty.sdf',
         description='World file to use in Gazebo')
@@ -141,12 +167,21 @@ The active world is controlled by the `DeclareLaunchArgument` block near the top
     ```python
     declare_world_cmd = DeclareLaunchArgument(
         'world',
+        #default_value='inspection_boxes_x10.world',
         #default_value='inspection_boxes_x10_v2.world',  # social nav testing (MDPI publication)
         #default_value='inspection_boxes_v3.world',       # dense boxes for Active Vision
         default_value='inspection_boxes_v4.world',        # <-- current default (Active Vision)
         #default_value='office_cpr_construction.world',
         #default_value='island.sdf',
+        #default_value='inspection_simple.world',
         #default_value='rubicon.sdf',
+        #default_value='simplecave3.sdf',
+        #default_value='maze_simple.sdf',
+        #default_value='maze_pillars.sdf',
+        #default_value='inspection.world',
+        #default_value='simple_40m2.world',
+        #default_value='maze_clean.sdf',
+        #default_value='maze_empty.sdf',
         description='World file to use in Gazebo')
     ```
   </Step>
@@ -161,26 +196,5 @@ The active world is controlled by the `DeclareLaunchArgument` block near the top
 </Steps>
 
 <Note>
-  The `world_name` variable inside `Leo_rover_fisheye.launch.py` is hardcoded to `'inspect'` (used for pose bridge and actor topics). If you switch to the construction or island world, update `world_name` in the launch file to match, or the `ros_gz_bridge` dynamic pose topic will not resolve correctly.
+  The `world_name` variable inside `Leo_rover_fisheye.launch.py` is hardcoded to `'inspect'` (used for the dynamic pose bridge topic `/world/inspect/dynamic_pose/info` and actor topics). If you switch to the construction or island world, update `world_name` in the launch file to match, or the `ros_gz_bridge` dynamic pose topic will not resolve correctly.
 </Note>
-
----
-
-## Additional Worlds
-
-<Accordion title="Other worlds in the worlds/ directory">
-  The `worlds/` directory also contains several experimental and legacy environments:
-
-  | File | Notes |
-  |---|---|
-  | `simplecave3.sdf` | Narrow cave-like passage — useful for confined-space navigation research. |
-  | `depot.sdf` | Warehouse depot layout. |
-  | `fortress.sdf` | Fortress-style walled environment. |
-  | `agriculture.world` | Agricultural field setting. |
-  | `pillars.sdf` | Open area with scattered pillar obstacles. |
-  | `maze_and_person.sdf` | Maze with a static person actor pre-placed. |
-  | `maze_empty.sdf` | Empty maze shell with no internal obstacles. |
-  | `yosemite.world` | Yosemite terrain model. |
-
-  These are not currently wired into the primary launch files but can be added by following the same world-switching procedure above.
-</Accordion>

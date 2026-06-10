@@ -1,5 +1,5 @@
 ---
-title: "ROS 2 Topics and Message Types Reference"
+title: "ROS 2 Topics and Message Types Reference — RoboTerrain"
 sidebarTitle: "ROS Topics"
 description: "Complete reference for all ROS 2 topics published and subscribed by RoboTerrain nodes, including sensor data, control commands, and navigation interfaces."
 ---
@@ -21,33 +21,17 @@ The `ros_gz_bridge` node translates topics between the Ignition Gazebo message s
 | `/joint_states` | `sensor_msgs/msg/JointState` | Gazebo → ROS 2 (`[`) | `gz.msgs.Model` | Per-joint position, velocity, and effort values for all robot joints |
 | `/scan` | `sensor_msgs/msg/LaserScan` | Bidirectional (`@`) | `gz.msgs.LaserScan` | 2-D LIDAR scan data; used by MetricsNode for collision detection and by Nav2 for obstacle avoidance |
 | `/imu/data` | `sensor_msgs/msg/Imu` | Bidirectional (`@`) | `gz.msgs.IMU` | Raw IMU linear acceleration and angular velocity; used by MetricsNode for smoothness and terrain-roughness metrics |
-| `/camera/image_raw` | `sensor_msgs/msg/Image` | Gazebo → ROS 2 (`[`) | `gz.msgs.Image` | RGB camera frames from the onboard camera; used by vision-based RL policies |
-| `/camera_info` | `sensor_msgs/msg/CameraInfo` | Gazebo → ROS 2 (`[`) | `gz.msgs.CameraInfo` | Camera intrinsic calibration data accompanying `/camera/image_raw` |
+| `/camera/image_raw` | `sensor_msgs/msg/Image` | Bidirectional (`@`) | `gz.msgs.Image` | RGB camera frames from the onboard camera; used by vision-based RL policies |
+| `/camera_info` | `sensor_msgs/msg/CameraInfo` | Bidirectional (`@`) | `gz.msgs.CameraInfo` | Camera intrinsic calibration data accompanying `/camera/image_raw` |
 | `/world/default/dynamic_pose/info` | `geometry_msgs/msg/PoseArray` | Gazebo → ROS 2 (`[`) | `ignition.msgs.Pose_V` | Ground-truth poses of all entities in the `default` world; consumed by `PoseConverterNode` to derive `/rover/pose_array` |
 
 <Note>
   The `/scan` topic is **not bridged** in `Leo_rover_fisheye.launch.py` because the fisheye model (`leo_sim_fisheye.sdf`) does not include a 2-D LIDAR sensor. Check which launch file your configuration uses before relying on `/scan`.
 </Note>
 
-### Depth Camera Topics (Leo Rover Depth variant)
-
-When using `Leo_rover_depth.launch.py` with the `leo_depth.sdf` model, three additional depth-camera topics are bridged:
-
-| Topic | ROS 2 Message Type | Direction | Description |
-|---|---|---|---|
-| `/depth_camera/points` | `sensor_msgs/msg/PointCloud2` | Gazebo → ROS 2 (`[`) | 3-D point cloud from the depth camera |
-| `/depth_camera/depth_image` | `sensor_msgs/msg/Image` | Gazebo → ROS 2 (`[`) | Raw depth image |
-| `/depth_camera/camera_info` | `sensor_msgs/msg/CameraInfo` | Gazebo → ROS 2 (`[`) | Intrinsic calibration for the depth camera |
-
-### Actor Pose Topics (Fisheye / Inspection worlds)
-
-The inspection-scenario launch files bridge individual actor pose topics for dynamic obstacle tracking:
-
-| Topic | ROS 2 Message Type | Description |
-|---|---|---|
-| `/linear_actor/pose` | `geometry_msgs/msg/Pose` | Ground-truth pose of `linear_actor` |
-| `/diag_actor/pose` | `geometry_msgs/msg/Pose` | Ground-truth pose of `diag_actor` |
-| `/triangle_actor/pose` | `geometry_msgs/msg/Pose` | Ground-truth pose of `triangle_actor` |
+<Note>
+  The ten topics listed above are the only topics bridged in `4wd_rover_gazebo.launch.py`. Other launch files such as `Leo_rover_depth.launch.py` and `Leo_rover_fisheye.launch.py` bridge additional topics (depth camera point clouds, actor poses, set-pose services) that are specific to those robot and world variants and are not part of the 4WD rover bridge configuration.
+</Note>
 
 ---
 
@@ -75,7 +59,7 @@ When running `leo_nav2_lidar_launch.py`, the full Nav2 stack is activated. These
 | `/goal_pose` | `geometry_msgs/msg/PoseStamped` | External → Nav2 | 2-D navigation goal; can be published from RViz2 or the RL agent |
 | `/tf` | `tf2_msgs/msg/TFMessage` | `PoseConverterNode` → Nav2 | `odom` → `base_footprint` transform broadcast by the pose converter; consumed by all Nav2 costmap layers |
 
-The Nav2 configuration uses the `odom` frame as the global frame for mapless navigation (no AMCL or map server). The global planner is `NavFn` and the local planner is `DWB`. See `leo_nav2_lidar_params.yaml` for full planner parameters.
+The Nav2 configuration uses the `odom` frame as the global frame for mapless navigation (no AMCL or map server). The global planner is `SmacPlanner2D` (MOORE grid search) and the local planner is `DWB` (Dynamic Window Approach). See `leo_nav2_lidar_params.yaml` for full planner parameters.
 
 ### World-Specific Service Topics
 

@@ -1,10 +1,10 @@
 ---
-title: "RoverEnvFused: Vision-Fused Gymnasium Environment API"
+title: "RoverEnvFused Vision-Fused Gymnasium Environment API"
 sidebarTitle: "RoverEnvFused"
 description: "API reference for RoverEnvFused — the 3-channel fused vision Gymnasium environment used with the Active Vision and DreamerV3 pipeline in RoboTerrain."
 ---
 
-`RoverEnvFused` is a Gymnasium-compatible environment that replaces the raw LIDAR/IMU sensor stack of `RoverEnv` with a rich **3-channel fused image observation** delivered via POSIX shared memory. Each 96×96 frame is composed of three co-registered visual channels: a grayscale camera view, a YOLO pedestrian-detection mask, and a monocular depth map. This design lets the environment consume pre-processed, inference-ready observations from a separate Active Vision pipeline process without the latency of inter-process ROS2 messaging. The continuous-action variant is implemented in `ros2_ws/src/sb3/environments/leo_rover_env_fused.py`.
+`RoverEnvFused` is a Gymnasium-compatible environment that replaces the raw LIDAR sensor stack of `RoverEnv` with a rich **3-channel fused image observation** delivered via POSIX shared memory. Each 96×96 frame is composed of three co-registered visual channels: a grayscale camera view, a YOLO pedestrian-detection mask, and a monocular depth map. This design lets the environment consume pre-processed, inference-ready observations from a separate Active Vision pipeline process without the latency of inter-process ROS2 messaging. The continuous-action variant is implemented in `ros2_ws/src/sb3/environments/leo_rover_env_fused.py`.
 
 ---
 
@@ -34,11 +34,11 @@ RoverEnvFused(
 </ParamField>
 
 <ParamField path="scan_topic" type="str" default="'/scan'">
-  ROS2 topic name for `sensor_msgs/LaserScan` messages. LIDAR data is retained for internal reward calculations even though it is not part of the primary observation returned to the agent.
+  ROS2 topic name for `sensor_msgs/LaserScan` messages. No LIDAR subscriber is created in `RoverEnvFused`; this parameter is accepted for API compatibility but has no effect on the running environment.
 </ParamField>
 
 <ParamField path="imu_topic" type="str" default="'/imu/data'">
-  ROS2 topic name for `sensor_msgs/Imu` messages. In the fused environment the IMU subscriber is disabled by default (commented out); orientation is instead extracted from the `/rover/pose_array` quaternion inside `pose_array_callback`.
+  ROS2 topic name for `sensor_msgs/Imu` messages. The IMU subscriber is disabled by default (commented out in source); orientation is instead extracted from the `/rover/pose_array` quaternion inside `pose_array_callback`.
 </ParamField>
 
 <ParamField path="cmd_vel_topic" type="str" default="'/cmd_vel'">
@@ -46,19 +46,19 @@ RoverEnvFused(
 </ParamField>
 
 <ParamField path="world_n" type="str" default="'inspect'">
-  Simulated world name. Accepted values: `'inspect'`, `'moon'`, `'maze'`. The string `'island'` is silently remapped to `'moon'` at construction time. The world name controls spawn ranges, goal ranges, and out-of-bounds thresholds identically to `RoverEnv`.
+  Simulated world name. Accepted values: `'inspect'`, `'moon'`, `'maze'`. The string `'island'` is silently remapped to `'moon'` at construction time via `if world_n == 'island': self.world_name = 'moon'`. The world name controls spawn ranges, goal ranges, and out-of-bounds thresholds identically to `RoverEnv`.
 </ParamField>
 
 <ParamField path="connection_check_timeout" type="int" default="30">
-  Seconds to wait for initial sensor data when verifying the robot connection. The robot connection check is currently disabled in `RoverEnvFused`; this parameter is reserved for future use.
+  Seconds to wait for initial sensor data when verifying the robot connection. The robot connection check is currently disabled in `RoverEnvFused`; this parameter is reserved for future use. If re-enabled, `_check_robot_connection` returns `False` after the timeout elapses.
 </ParamField>
 
 <ParamField path="lidar_points" type="int" default="32">
-  Downsampled LIDAR resolution. Retained from `RoverEnv` for reward computation; not included in the agent observation.
+  Downsampled LIDAR resolution. The `lidar_data` buffer is initialised but no LIDAR subscriber is created; this parameter is present for API compatibility.
 </ParamField>
 
 <ParamField path="max_lidar_range" type="float" default="12.0">
-  Maximum valid LIDAR range in metres used when clipping raw scan values.
+  Maximum valid LIDAR range in metres. Used to size the `lidar_data` buffer.
 </ParamField>
 
 <ParamField path="rl_obs_name" type="str" default="'rl_observation'">
@@ -182,7 +182,7 @@ The segment is opened in **attach-only** mode; `RoverEnvFused` never creates or 
 
 ## Action Space
 
-The action space is identical to `RoverEnv` with one difference: the minimum linear speed is **−0.6** instead of **−1.0**, limiting the rover's reverse capability:
+The action space uses a continuous `Box` with a minimum linear speed of **−0.6** m/s (limiting the rover's reverse capability compared to `RoverEnv`'s −1.0):
 
 ```python
 spaces.Box(
@@ -199,7 +199,7 @@ spaces.Box(
 
 ---
 
-## Key Methods
+## Methods
 
 ### `step(action) -> tuple`
 
@@ -211,11 +211,13 @@ Executes one environment step:
 
 1. Checks for flip, stuck-in-collision, stuck, and out-of-bounds conditions with associated terminal penalties.
 2. Decodes `action` into `speed` and `relative_heading_command`.
-3. Computes absolute target heading and calls `heading_controller()` to get angular velocity.
+3. Computes absolute target heading (`current_yaw + relative_heading_command`) and calls `heading_controller()` to get angular velocity.
 4. Publishes a `Twist` command.
 5. Calls `get_observation()`, which blocks on `get_fused_observation()` until a fresh shared-memory frame is available.
-6. Calls `task_reward(observation)` — the fused variant passes the full observation dict so the reward can inspect the pedestrian heatmap channel.
+6. Calls `task_reward(observation)` — passes the full observation dict so the reward can inspect the pedestrian heatmap channel.
 7. Spins the ROS2 node once (`timeout_sec=0.001`) to flush callbacks.
+
+`info` dict keys: `steps`, `total_steps`, `reward`.
 
 ---
 
@@ -225,7 +227,71 @@ Executes one environment step:
 observation, info = env.reset()
 ```
 
-Identical reset logic to `RoverEnv`: stops the rover, teleports it via the Ignition Gazebo service, randomises the goal position, spins for 10 seconds, and returns the initial observation. The initial observation includes a fresh fused image read from shared memory.
+Resets the episode to a randomised initial state: stops the rover, teleports it via the Ignition Gazebo `ign service` CLI, randomises the goal position, spins the ROS2 node for 100 × 0.1 s to let the pose settle, sleeps 1 s, then returns the initial observation (which includes a fresh fused image read from shared memory).
+
+---
+
+### `get_observation() -> dict`
+
+Returns the current observation dictionary:
+
+```python
+{
+    'fused_image': self.get_fused_observation(),         # np.ndarray (96, 96, 3)
+    'pose':        self.rover_position,                  # np.ndarray (3,)
+    'imu':         [pitch, roll, yaw],                   # np.ndarray (3,)
+    'target':      self.get_target_info(),               # np.ndarray (2,)
+    'velocities':  [linear_velocity, angular_velocity],  # np.ndarray (2,)
+}
+```
+
+---
+
+### `get_target_info() -> np.ndarray`
+
+Computes and returns `[distance, relative_angle]` to the current goal. Distance is Euclidean in metres; angle is relative to the rover's current yaw, normalised to `[-π, π]`.
+
+---
+
+### `task_reward(observation) -> float`
+
+Computes the scalar reward. Unlike `RoverEnv`, this variant accepts the full observation dict so it can read the pedestrian heatmap channel (`observation['fused_image'][:, :, 1]`). Key constants:
+
+| Constant | Value |
+|----------|-------|
+| `success_distance` | 0.5 m |
+| `goal_reward` | 100 |
+| `distance_delta_scale` | 0.9 |
+| `heatmap_center_scale` | 0.1 |
+| `stuck_penalty` | −25.0 |
+| `too_far_away_penilty` | −10.0 |
+
+The heatmap penalty subtracts `heatmap_center_scale × sum(center_4_columns_of_heatmap)` from the reward each step, discouraging the rover from moving towards detected pedestrians.
+
+---
+
+### `is_robot_flipped() -> Union[str, bool]`
+
+Returns `'roll_left'`, `'roll_right'`, `'pitch_forward'`, or `'pitch_backward'` when either absolute angle exceeds `flip_threshold = 1.48 rad (~85°)`. Returns `False` otherwise.
+
+---
+
+### `heading_controller(desired_heading, current_heading) -> float`
+
+PID controller for yaw tracking. Identical gains to `RoverEnv`:
+
+| Parameter | Value |
+|-----------|-------|
+| `Kp` | 2.0 |
+| `Ki` | 0.0 |
+| `Kd` | 0.1 |
+| Max output | ±7.0 rad/s |
+
+---
+
+### `too_far_away() -> bool`
+
+Returns `True` when the rover exits the world-specific bounding box. Triggers episode termination with `too_far_away_penilty = -10.0`.
 
 ---
 
@@ -237,6 +303,38 @@ env.close()
 
 1. Calls `self.rl_obs_shm.close()` to detach from the shared memory segment (does **not** unlink it — the inference pipeline owns the segment lifetime).
 2. Destroys the ROS2 node and calls `rclpy.shutdown()`.
+
+---
+
+### `pose_array_callback(msg)`
+
+Subscriber callback for `/rover/pose_array`. Extracts the first pose, stores position in `self.rover_position`, and extracts roll/pitch/yaw from the quaternion via `transforms3d.euler.quat2euler`. This callback also serves as the orientation source since the IMU subscriber is disabled.
+
+---
+
+### `odom_callback(msg)`
+
+Subscriber callback for `/odometry/wheels` (`nav_msgs/Odometry`). Stores `msg.twist.twist.linear.x` and `msg.twist.twist.angular.z` in `self.current_linear_velocity` and `self.current_angular_velocity`.
+
+---
+
+## Robot Connection Check
+
+`_check_robot_connection(timeout)` is defined but **disabled** (commented out) in `RoverEnvFused.__init__`. When re-enabled it polls `lidar_data` for non-zero values and returns `False` after the timeout elapses without detecting sensor activity.
+
+---
+
+## Stuck Detection
+
+`RoverEnvFused` uses the same `position_history` mechanism as `RoverEnv` but with different thresholds:
+
+| Parameter | Value |
+|-----------|-------|
+| `stuck_window` | 5000 steps |
+| `stuck_threshold` | 0.0001 m |
+| `stuck_penalty` | −25.0 |
+
+Once `position_history` reaches 5000 entries, `step()` checks whether the displacement between the oldest and newest recorded position is less than 0.0001 m. If so, the episode terminates with the stuck penalty.
 
 ---
 
@@ -273,5 +371,5 @@ env.close()
 ```
 
 <Note>
-  When using DreamerV3, wrap the environment in a `gym.wrappers.FlattenObservation` or configure the DreamerV3 encoder to consume the `Dict` space directly. The `fused_image` key should be routed to the convolutional encoder; the scalar keys (`pose`, `imu`, `target`, `velocities`) should be processed by an MLP encoder.
+  When using DreamerV3, configure the encoder to consume the `Dict` space directly. The `fused_image` key should be routed to the convolutional encoder; the scalar keys (`pose`, `imu`, `target`, `velocities`) should be processed by an MLP encoder.
 </Note>

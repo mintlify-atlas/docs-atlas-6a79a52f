@@ -1,17 +1,17 @@
 ---
-title: "RoverEnvFused Discrete: Discrete-Action Environment API"
+title: "Discrete RoverEnvFused Gymnasium Environment API Reference"
 sidebarTitle: "Discrete Env"
-description: "API reference for the discrete-action RoverEnvFused variant in discrete_rover_env_fused.py, with a multi-discrete action space for rover navigation."
+description: "API reference for the discrete-action RoverEnvFused variant in discrete_rover_env_fused.py, with a flat Discrete(60) action space for rover navigation."
 ---
 
-The discrete-action variant of `RoverEnvFused` lives in `ros2_ws/src/sb3/environments/discrete_rover_env_fused.py`. It exposes the same 3-channel fused visual observation and shared-memory interface as `RoverEnvFused`, but replaces the continuous `Box` action space with a flat `Discrete` space of **60 actions** — the Cartesian product of 5 speed levels and 12 compass headings. This design is intended for algorithms such as DQN, Rainbow, and other value-based methods that require a finite set of actions, and can simplify exploration in early training by constraining the agent to a small, semantically meaningful action vocabulary.
+The discrete-action variant of `RoverEnvFused` lives in `ros2_ws/src/sb3/environments/discrete_rover_env_fused.py`. It exposes the same 3-channel fused visual observation and shared-memory interface as the continuous `RoverEnvFused`, but replaces the continuous `Box` action space with a flat `Discrete(60)` space — the Cartesian product of 5 speed levels and 12 compass headings. This design is intended for algorithms such as DQN, Rainbow, and other value-based methods that require a finite set of actions, and can simplify exploration in early training by constraining the agent to a small, semantically meaningful action vocabulary.
 
 ---
 
 ## Constructor
 
 ```python
-RoverEnvFused(   # discrete variant
+RoverEnvFused(   # discrete variant from discrete_rover_env_fused.py
     size=(96, 96),
     length=6000,
     scan_topic='/scan',
@@ -36,7 +36,7 @@ The constructor signature and all parameters are **identical** to the continuous
 </ParamField>
 
 <ParamField path="scan_topic" type="str" default="'/scan'">
-  ROS2 topic for `sensor_msgs/LaserScan`. Retained for internal reward computation.
+  ROS2 topic for `sensor_msgs/LaserScan`. No LIDAR subscriber is created; this parameter is present for API compatibility.
 </ParamField>
 
 <ParamField path="imu_topic" type="str" default="'/imu/data'">
@@ -48,23 +48,23 @@ The constructor signature and all parameters are **identical** to the continuous
 </ParamField>
 
 <ParamField path="world_n" type="str" default="'inspect'">
-  Simulated world name: `'inspect'`, `'moon'`, or `'maze'`. The string `'island'` is internally remapped to `'moon'`.
+  Simulated world name: `'inspect'`, `'moon'`, or `'maze'`. The string `'island'` is internally remapped to `'moon'` via `if world_n == 'island': self.world_name = 'moon'`.
 </ParamField>
 
 <ParamField path="connection_check_timeout" type="int" default="30">
-  Seconds to wait for initial sensor data (currently unused in this environment variant).
+  Seconds to wait for initial sensor data. `_check_robot_connection` is currently disabled; if re-enabled it returns `False` after the timeout elapses without detecting sensor activity.
 </ParamField>
 
 <ParamField path="lidar_points" type="int" default="32">
-  Downsampled LIDAR resolution used for internal collision monitoring.
+  Downsampled LIDAR resolution. Initialises the `lidar_data` buffer size; no LIDAR subscriber is created.
 </ParamField>
 
 <ParamField path="max_lidar_range" type="float" default="12.0">
-  Maximum LIDAR range in metres used when clipping raw scan values.
+  Maximum LIDAR range in metres used to size the `lidar_data` buffer.
 </ParamField>
 
 <ParamField path="rl_obs_name" type="str" default="'rl_observation'">
-  Name of the POSIX shared memory segment written by the Active Vision inference pipeline. Must exist before the environment is instantiated.
+  Name of the POSIX shared memory segment written by the Active Vision inference pipeline. Must exist before the environment is instantiated; the constructor calls `exit(1)` if the segment is not found.
 </ParamField>
 
 ---
@@ -120,9 +120,9 @@ Twelve angles are evenly distributed from **−π** to **π** (exclusive), space
 Inside `step()`, an integer action is decoded into a `(speed_idx, direction_idx)` pair:
 
 ```python
-action     = int(action)
-speed_idx  = action // self.n_directions   # integer division by 12
-direction_idx = action % self.n_directions # remainder
+action        = int(action)
+speed_idx     = action // self.n_directions   # integer division by 12
+direction_idx = action % self.n_directions    # remainder
 
 speed           = float(self.speed_levels[speed_idx])
 desired_heading = float(self.direction_angles[direction_idx])
@@ -134,7 +134,7 @@ The decoded `desired_heading` is an **absolute** heading in radians (not a relat
 
 ```python
 # Action 27 → speed_idx=2, direction_idx=3
-action = 27
+action        = 27
 speed_idx     = 27 // 12  # = 2  → 0.3 m/s (slow forward)
 direction_idx = 27 % 12   # = 3  → -1.57 rad (South)
 ```
@@ -185,6 +185,20 @@ spaces.Dict({
 | `imu` | `(3,)` | Orientation `[pitch, roll, yaw]` in radians |
 | `target` | `(2,)` | `[distance_m, relative_angle_rad]` to the navigation goal |
 | `velocities` | `(2,)` | `[linear_velocity, angular_velocity]` from wheel odometry |
+
+---
+
+## Stuck Detection
+
+Like both `RoverEnv` variants, this environment tracks `position_history`. The discrete environment inherits the fused-environment thresholds:
+
+| Parameter | Value |
+|-----------|-------|
+| `stuck_window` | 5000 steps |
+| `stuck_threshold` | 0.0001 m |
+| `stuck_penalty` | −25.0 |
+
+Once `position_history` holds 5000 entries, `step()` computes the displacement between the oldest and newest position. If it is below 0.0001 m the episode terminates immediately with the stuck penalty.
 
 ---
 

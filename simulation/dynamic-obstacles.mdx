@@ -55,15 +55,17 @@ Actors are spawned **after** the Gazebo simulation is already running. Each call
 
 | Argument | Default | Description |
 |---|---|---|
-| `--trajectory_file` | `flat_triangle_traject_rev.sdf` | Path to the trajectory SDF file (relative or absolute) |
+| `--trajectory_file` | `flat_triangle_traject_rev.sdf` | Path to the trajectory SDF file (relative or absolute). **Note:** this default does not exist in `trajectories/` — always pass an explicit path from the table above. |
 | `--actor_name` | `first` | Unique name for the Gazebo actor entity (e.g. `linear`, `diag`). Also used as the ROS 2 topic prefix: `/<actor_name>_actor/pose`. |
 | `--animate_name` | `actor1` | Unique animation name within the SDF to prevent Gazebo animation conflicts when multiple actors are present |
 | `--world_name` | `moon` | Gazebo internal world name matching the loaded world (e.g. `inspect`, `default`) |
 
 ### Example: Inspection World — Three Actors
 
+From the `Active_Vision_README.md` setup procedure (Terminal 5):
+
 ```bash
-cd ros2_ws/src/dynamic_obstacles
+cd ~/src/RoboTerrain/ros2_ws/src/dynamic_obstacles
 
 # First actor — straight crossing path
 python spawn.py \
@@ -87,7 +89,7 @@ python spawn.py \
 ### Example: Construction World — Two Actors
 
 ```bash
-cd ros2_ws/src/dynamic_obstacles
+cd ~/src/RoboTerrain/ros2_ws/src/dynamic_obstacles
 
 # Lower level actor
 python spawn.py \
@@ -132,12 +134,12 @@ python spawn.py \
 RoboTerrain includes several Python utilities for creating new trajectory SDF files from scratch.
 
 <CardGroup cols={2}>
-  <Card title="generate_trajectory.py" icon="route">
+  <Card title="generate_trajectory.py" icon="route" href="/simulation/dynamic-obstacles">
     General-purpose trajectory generator. Converts a set of `(x, y)` waypoints into a properly formatted SDF `<trajectory>` block for use with `spawn.py`.
 
     Located at: `ros2_ws/src/dynamic_obstacles/generate_trajectory.py`
   </Card>
-  <Card title="generate_flat_trajectory.py" icon="arrows-left-right">
+  <Card title="generate_flat_trajectory.py" icon="arrows-left-right" href="/simulation/dynamic-obstacles">
     Specialised for flat-terrain environments. Generates triangle and polygon trajectories on a flat ground plane.
 
     Located at: `ros2_ws/src/dynamic_obstacles/generate_flat_trajectory.py`
@@ -183,5 +185,5 @@ The topic name follows the pattern `/<actor_name>_actor/pose` and is bridged to 
 The RL policy can subscribe to these topics to obtain real-time actor positions for training social navigation behaviour.
 
 <Tip>
-  When adding a new actor that does not have a corresponding bridge entry in the launch file, add the topic line to `gz_ros2_bridge` arguments list in `Leo_rover_fisheye.launch.py` and rebuild the workspace before launching. Pose data will not be available to ROS 2 nodes until the bridge is configured.
+  When adding a new actor that does not have a corresponding bridge entry in the launch file, add the topic line to the `gz_ros2_bridge` arguments list in `Leo_rover_fisheye.launch.py` and rebuild the workspace before launching. Pose data will not be available to ROS 2 nodes until the bridge is configured.
 </Tip>

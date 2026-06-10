@@ -21,7 +21,9 @@ RoverEnv(
     scan_topic='/scan',
     imu_topic='/imu/data',
     cmd_vel_topic='/cmd_vel',
+    camera_topic='/camera/image_raw',
     world_n='inspect',
+    connection_check_timeout=30,
     lidar_points=32,
     max_lidar_range=12.0,
 )
@@ -34,7 +36,9 @@ RoverEnv(
 | `scan_topic` | `str` | `'/scan'` | ROS 2 LIDAR topic |
 | `imu_topic` | `str` | `'/imu/data'` | ROS 2 IMU topic |
 | `cmd_vel_topic` | `str` | `'/cmd_vel'` | Velocity command topic |
+| `camera_topic` | `str` | `'/camera/image_raw'` | ROS 2 camera topic (image buffer, unused in base env) |
 | `world_n` | `str` | `'inspect'` | Active Gazebo world — `'inspect'`, `'moon'` (island), or `'maze'` |
+| `connection_check_timeout` | `int` | `30` | Seconds to wait for an initial LIDAR scan before flagging simulation mode |
 | `lidar_points` | `int` | `32` | Number of downsampled LIDAR points |
 | `max_lidar_range` | `float` | `12.0` | Maximum LIDAR range in metres |
 
@@ -109,10 +113,10 @@ The heading action is a **relative offset** added to the current yaw. A PID head
 
 The environment enforces four termination conditions that end the episode early:
 
-- **Flip detection** — episode ends immediately if `|roll|` or `|pitch|` exceeds **1.48 rad (≈ 85°)**.
-- **Stuck detection** — episode ends if the total Euclidean displacement over the last 600 steps is less than **0.001 m**.
+- **Flip detection** — episode ends immediately if `|roll|` or `|pitch|` exceeds **1.48 rad (≈ 85°)** (checked via the local constant `FLIP_THRESHOLD = 1.48` inside `is_robot_flipped()`).
+- **Stuck detection** — episode ends if the total Euclidean displacement over the last `stuck_window` steps is less than `stuck_threshold` (**0.001 m** over **600 steps** by default in `rover_env.py`).
 - **Out-of-bounds detection** — episode ends if the rover's x or y position exits the world-specific boundary rectangle.
-- **Collision monitoring** — persistent proximity under 0.3 m for more than 15 consecutive steps triggers an episode reset.
+- **Stuck-in-collision termination** — episode ends when `self.collision_count > self.stuck_window` (i.e., `collision_count` exceeds 600). This fires at the top of `step()` and resets `collision_count` to zero.
 
 ### Reward and Penalties
 
@@ -120,9 +124,9 @@ The environment enforces four termination conditions that end the episode early:
 |---|---|---|
 | Goal reached (distance < 0.5 m) | `+100` | New goal randomised; episode continues |
 | Collision (LIDAR min < 0.3 m) | `-0.5` | Per-step penalty |
-| Stuck (< 0.001 m in 600 steps) | `-25.0` | `stuck_penalty` |
-| Flip / persistent collision | `-20` | `general_penalty` |
-| Out-of-bounds | `-10` | `too_far_away_penalty` |
+| Stuck (displacement < 0.001 m over `stuck_window` steps) | `-25.0` | Source field: `stuck_penilty` (intentional typo in source) |
+| Flip / stuck-in-collision | `-20` | Source field: `general_penility` (intentional typo in source) |
+| Out-of-bounds | `-10` | `too_far_away_penilty` |
 | Distance progress reward | `distance_delta × 0.3 × 1.5` | Positive when moving toward goal |
 | Linear velocity bonus | `linear_vel × 0.0025` | Encourages forward motion |
 | Turn penalty | `-0.0015 × |angular_vel|` | Discourages spinning in place |

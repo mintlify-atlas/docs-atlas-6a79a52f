@@ -1,7 +1,7 @@
 ---
-title: "Reward Function Design and Tuning Reference"
+title: "Reward Function Design and Tuning Reference — RoboTerrain"
 sidebarTitle: "Reward Function"
-description: "Complete reference for RoboTerrain's reward function including distance, heading, velocity, collision, stuck, and out-of-bounds components with tunable constants."
+description: "Reference for RoboTerrain's reward function covering distance, heading, velocity, collision, stuck, and out-of-bounds components with tunable constants."
 ---
 
 The reward function is the primary mechanism by which the rover learns to navigate efficiently to goals while avoiding collisions and pathological behaviors like spinning in place or getting stuck. Every component is computed inside `task_reward()` in `ros2_ws/src/sb3/environments/rover_env.py`, which is called once per environment step after the rover publishes a velocity command. The function balances five competing objectives: goal-seeking, obstacle avoidance, forward progress, turning efficiency, and episode termination detection.
@@ -254,7 +254,7 @@ A `heading_reward` threshold of `0.002` is used as the gate for distance reward 
 | `distance_delta_scale` | `0.3` | Scales distance-progress reward before applying `final_reward_multiplier`. Higher values increase the reward gradient toward the goal. |
 | `final_reward_multiplier` | `1.5` | Global multiplier applied to `distance_reward`. Scales overall reward magnitude without changing relative component weights. |
 | `goal_reward` | `100` | Reward for reaching the goal. Should remain substantially larger than the maximum possible accumulated reward over a short episode to keep goal-seeking as the dominant objective. |
-| `stuck_penalty` | `−25.0` | Terminal penalty for being stuck. Larger magnitude strongly discourages stationary behavior but can cause instability early in training. |
+| `stuck_penalty` | `−25.0` | Terminal penalty for being stuck. Larger magnitude strongly discourages stationary behavior but can cause instability early in training. *(Source variable is spelled `stuck_penilty` — typo in `rover_env.py`.)* |
 | `stuck_threshold` | `0.001 m` | Minimum displacement over `stuck_window` steps before a stuck penalty fires. |
 | `stuck_window` | `600 steps` | Look-back window for stuck detection. Shorter windows detect stuck faster but may false-positive during deliberate slow traversal. |
 | `turning_penalty_coeff` | `0.0015` | Coefficient on angular velocity penalty. Tune upward to strongly discourage spinning; tune downward if the rover needs to make sharp turns frequently. |
@@ -268,7 +268,7 @@ A `heading_reward` threshold of `0.002` is used as the gate for distance reward 
 </ParamField>
 
 <ParamField path="general_penalty" type="float" default="-20.0">
-  Terminal penalty for flip or extended collision events. Set at `self.general_penility = -20` in `__init__`.
+  Terminal penalty for flip or extended collision events. Set at `self.general_penility = -20` in `__init__`. *(Source variable is spelled `general_penility` — typo in `rover_env.py`.)*
 </ParamField>
 
 <ParamField path="too_far_away_penalty" type="float" default="-10.0">

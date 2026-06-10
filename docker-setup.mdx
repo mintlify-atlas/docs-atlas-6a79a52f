@@ -1,7 +1,7 @@
 ---
 title: "Run RoboTerrain in Docker with ROS 2 and CUDA"
 sidebarTitle: "Docker Setup"
-description: "Build and run the RoboTerrain Docker container based on osrf/ros:humble-desktop with Gazebo Fortress, PyTorch CUDA, and Stable Baselines3 pre-installed."
+description: "Build and run the RoboTerrain Docker image on osrf/ros:humble-desktop with Gazebo Fortress, PyTorch CUDA 11.8, and Stable Baselines3 pre-installed."
 ---
 
 The RoboTerrain Dockerfile provides a fully self-contained, reproducible environment built on top of `osrf/ros:humble-desktop` (Ubuntu 22.04). Inside the image you get ROS 2 Humble full desktop, Nav2, Gazebo Fortress via the `ros-humble-ros-gz` meta-package, PyTorch with CUDA 11.8 support, Stable Baselines3 with extras, and the entire `ros2_ws` workspace pre-built — so you can jump straight to running experiments without managing system dependencies on your host machine.
@@ -32,8 +32,8 @@ The build process will:
 2. Install OpenGL libraries needed for Gazebo rendering
 3. Install ROS 2 Humble full desktop, Nav2, and all control packages via `apt`
 4. Install Gazebo Fortress and the ROS ↔ Gazebo bridge
-5. Install PyTorch (CUDA 11.8) and Stable Baselines3 via `pip3`
-6. Copy the `ros2_ws/src/` directory into the image and run `colcon build`
+5. Install PyTorch (CUDA 11.8), `gym==0.23.1`, and Stable Baselines3 via `pip3`
+6. Copy the `ros2_ws/src/` directory into `/home/ros2_ws/src` and run `colcon build`
 
 Expect the initial build to take **10–20 minutes** depending on your network speed and CPU. Subsequent rebuilds use the Docker layer cache and are significantly faster unless the `apt` or `pip` steps change.
 
@@ -88,14 +88,28 @@ The following packages and libraries are installed inside the image:
 - `ros-humble-ros-gz-sim` — Gazebo simulation bridge
 - `ros-humble-gazebo-ros2-control` — Gazebo hardware interface for `ros2_control`
 
-**Python packages (via `pip3`)**
+**Python packages (via `pip3`, installed in the Dockerfile)**
 - `torch`, `torchvision`, `torchaudio` — PyTorch with CUDA 11.8 (`--extra-index-url https://download.pytorch.org/whl/cu118`)
-- `gym==0.23.1` — OpenAI Gym (pinned for SB3 compatibility)
+- `gym==0.23.1` — OpenAI Gym, pinned for SB3 API compatibility
 - `stable-baselines3[extra]` — SB3 with TensorBoard, OpenCV, and Hugging Face Hub extras
 - `numpy`, `scipy` — Scientific computing foundations
 
 **System libraries (via `apt`)**
 - `libgl1-mesa-glx`, `libgl1-mesa-dri`, `libglvnd-dev`, `mesa-utils` — OpenGL libraries required for Gazebo 3D rendering
+
+<Note>
+  The `requirements.txt` file in the repository root lists `transforms3d`, `stable-baselines3[extra]`, and `jax` for use in native (non-Docker) installations. The Dockerfile installs `gym==0.23.1`, `stable-baselines3[extra]`, `numpy`, and `scipy` directly via `pip3`. If you need `transforms3d` or `jax` inside the container, install them manually after starting the container: `pip3 install transforms3d jax`.
+</Note>
+
+## Working Directory
+
+The Dockerfile sets `WORKDIR /home/ros2_ws` before copying and building the workspace. All paths inside the container are relative to this directory:
+
+```dockerfile
+WORKDIR /home/ros2_ws
+```
+
+The built workspace overlay is sourced automatically from `/home/ros2_ws/install/setup.bash` via the container's `.bashrc` and entrypoint.
 
 ## Exposed Ports
 
